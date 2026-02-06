@@ -14,7 +14,7 @@ A lightweight, local-network peer-to-peer file distribution system built with Go
 
 | Seeding (Windows) | Downloading (macOS) |
 |:---:|:---:|
-| <img src="assets/Seeder.png" width="45%" alt="Seeding"> | <img src="assets/Downloader.png" width="45%" alt="Downloading"> |
+| <img src="assets/Seeder.png" width="400" alt="Seeding"> | <img src="assets/Downloader.png" width="400" alt="Downloading"> |
 
 ## 📖 Documentation
 
