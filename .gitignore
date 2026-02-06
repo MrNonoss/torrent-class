@@ -1,2 +1,6 @@
 # Local Torrent database
 .torrent.bolt.db
+
+# Binaries
+releases/*
+!releases/.gitkeep

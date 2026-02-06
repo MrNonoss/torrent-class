@@ -57,6 +57,14 @@ To build for your current platform:
 go build -o torrent-class ./cmd/distributor
 ```
 
+### Build Automation
+
+To cross-compile binaries for all supported platforms (Windows, Linux, macOS):
+```bash
+go run scripts/build.go
+```
+The compiled binaries will be saved in the `releases/` folder.
+
 ## Usage
 
 Torrent Class can be run in two modes: `seed` and `download`.
