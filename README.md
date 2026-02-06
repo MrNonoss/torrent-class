@@ -10,6 +10,12 @@ A lightweight, local-network peer-to-peer file distribution system built with Go
 - **Premium TUI**: A sleek terminal user interface for monitoring transfers.
 - **Self-Distribution**: Built-in HTTP server for easy binary deployment across machines.
 
+## Previews
+
+| Seeding (Windows) | Downloading (macOS) |
+|:---:|:---:|
+| ![Seeding](assets/Seeder.png) | ![Downloading](assets/Downloader.png) |
+
 ## 📖 Documentation
 
 - **[User Guide](docs/USER_GUIDE.md)**: Simple steps for students and instructors.
@@ -59,7 +65,7 @@ go build -o torrent-class ./cmd/distributor
 
 ### Build Automation
 
-To cross-compile binaries for all supported platforms (Windows, Linux, macOS):
+To cross-compile binaries for the main supported platforms (Windows, Linux, macOS):
 ```bash
 go run scripts/build.go
 ```
