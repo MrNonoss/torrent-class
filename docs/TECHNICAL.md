@@ -22,6 +22,12 @@ Built using the **Charmbracelet** stack:
 - **Lip Gloss**: Used for terminal styling, borders, and colors.
 - **Progress**: A specialized component for rendering the visual progress bar.
 
+### 4. Interactive GUI (`github.com/ncruces/zenity`)
+For users who run the tool without command-line flags, Torrent Class provides a native GUI experience:
+- **Platform Native**: Uses PowerShell/Scripting on Windows, AppleScript on macOS, and zenity/qdbus on Linux.
+- **Simplified Choice**: Logic-driven dialogs guide users through mode selection and file picking.
+- **Safe Dismissal**: Closing a dialog window results in sensible defaults or safe cancellation.
+
 ## Network Architecture: "Viral Seeding"
 
 In a traditional setup, the instructor (Seeder) would be the bottleneck. Torrent Class implements **Viral Seeding**:
@@ -46,3 +52,4 @@ Torrent Class uses a local database file named `.torrent.bolt.db` (BoltDB format
 - `github.com/anacrolix/torrent`: Core P2P engine.
 - `github.com/charmbracelet/bubbletea`: TUI framework.
 - `github.com/charmbracelet/lipgloss`: TUI styling.
+- `github.com/ncruces/zenity`: Native GUI dialogs.

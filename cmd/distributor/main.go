@@ -17,6 +17,7 @@ import (
 	"github.com/anacrolix/torrent"
 	"github.com/charmbracelet/bubbles/progress"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/ncruces/zenity"
 )
 
 func main() {
@@ -42,6 +43,94 @@ func main() {
 	flag.StringVar(&ipOverride, "i", "", "Short for --ip")
 
 	flag.Parse()
+
+	// If no flags are provided, enter interactive mode via GUI dialogs
+	if flag.NFlag() == 0 {
+		selectedMode, err := zenity.List(
+			"Select operation mode:",
+			[]string{"Download (Receive files)", "Seed (Share a file/folder)"},
+			zenity.Title("Torrent Class"),
+			zenity.DefaultItems("Download (Receive files)"),
+		)
+		if err != nil {
+			if err == zenity.ErrCanceled {
+				os.Exit(0)
+			}
+			log.Fatalf("Error selecting mode: %v", err)
+		}
+
+		if selectedMode == "Seed (Share a file/folder)" {
+			mode = "seed"
+			// Use buttons: Folder (OK), File (Extra), Abort (Cancel/Close)
+			err := zenity.Question("What would you like to share?",
+				zenity.Title("Torrent Class - Seeding"),
+				zenity.OKLabel("Folder"),
+				zenity.ExtraButton("File"),
+				zenity.CancelLabel("Abort"),
+			)
+
+			if err == nil { // "Folder" clicked
+				res, err := zenity.SelectFile(
+					zenity.Title("Select folder to seed"),
+					zenity.Directory(),
+				)
+				if err != nil {
+					if err == zenity.ErrCanceled {
+						os.Exit(0)
+					}
+					log.Fatalf("Error selecting folder: %v", err)
+				}
+				path = res
+			} else if err == zenity.ErrExtraButton { // "File" clicked
+				res, err := zenity.SelectFile(
+					zenity.Title("Select file to seed"),
+				)
+				if err != nil {
+					if err == zenity.ErrCanceled {
+						os.Exit(0)
+					}
+					log.Fatalf("Error selecting file: %v", err)
+				}
+				path = res
+			} else {
+				// "Abort" clicked or window closed
+				os.Exit(0)
+			}
+		} else {
+			mode = "download"
+			// Use buttons: Choose Folder (OK), Current Directory (Cancel/Close)
+			err := zenity.Question("Where would you like to save the files?",
+				zenity.Title("Torrent Class - Download"),
+				zenity.OKLabel("Choose Folder"),
+				zenity.CancelLabel("Current Directory"),
+			)
+
+			if err == nil { // "Choose Folder" clicked
+				res, err := zenity.SelectFile(
+					zenity.Title("Select destination folder"),
+					zenity.Directory(),
+				)
+				if err == nil {
+					path = res
+				}
+			}
+			// If ErrCanceled (button or X), path remains "." which is correct
+		}
+	} else {
+		// CLI Validation: If mode is seed, path must be provided (not default ".")
+		pathWasSet := false
+		flag.Visit(func(f *flag.Flag) {
+			if f.Name == "path" || f.Name == "p" {
+				pathWasSet = true
+			}
+		})
+
+		if mode == "seed" && !pathWasSet {
+			fmt.Println("Error: You must specify a path to the file or folder you want to seed.")
+			fmt.Println("Usage: torrent-class -m seed -p <path>")
+			os.Exit(1)
+		}
+	}
 
 	// Handle the case where both long and short flags might be provided (last one wins)
 	// We use StringVar with pointers so they already overwritten each other if both set in a specific order,

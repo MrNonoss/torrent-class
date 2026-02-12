@@ -4,115 +4,45 @@ A lightweight, local-network peer-to-peer file distribution system built with Go
 
 ## Features
 
+- **Double-Click Experience**: Run the program without flags to be guided by native popups.
 - **Local Discovery**: Automatic peer discovery on local networks via UDP broadcast.
 - **No Dependencies**: Works without central trackers or DHT for local-only operation.
-- **High Performance**: Built on top of the robust `anacrolix/torrent` library.
+- **Viral Seeding**: Downloaders automatically help share parts with others.
 - **Premium TUI**: A sleek terminal user interface for monitoring transfers.
-- **Self-Distribution**: Built-in HTTP server for easy binary deployment across machines.
 
-## Previews
+## Getting Started
 
-| Seeding (Windows) | Downloading (macOS) |
-|:---:|:---:|
-| <img src="assets/Seeder.png" width="400" alt="Seeding"> | <img src="assets/Downloader.png" width="400" alt="Downloading"> |
+### 1. Download
+Grab the latest binary for your platform from the [Releases](https://github.com/your-repo/releases) section.
 
-## 📖 Documentation
+### 2. Usage (Interactive Mode)
+Simply **double-click** the binary (or run it without flags). 
+- Select **Seed** to share a file or folder.
+- Select **Download** to start receiving files broadcasted on the network.
 
-- **[User Guide](docs/USER_GUIDE.md)**: Simple steps for students and instructors.
-- **[Technical Guide](docs/TECHNICAL.md)**: Deep dive into the P2P engine and discovery protocol.
-
-## Download
-
-You can download the latest compiled binaries for your platform from the [Releases](https://github.com/your-repo/releases) section.
-
-### Binary Naming Convention
-
-Binaries are named following this pattern:
-`torrent-class-<platform>-<architecture>[.exe]`
-
-Examples:
-- `torrent-class-windows-amd64.exe`
-- `torrent-class-darwin-arm64` (MacOS)
-- `torrent-class-linux-amd64`
-
-## Getting Started (Developers)
-
-If you want to build from source:
-
-### Prerequisites
-
-- Go 1.25.6 or higher.
-
-### Installation
-
-1. Clone the repository:
-   ```bash
-   git clone <repository-url>
-   cd torrent-class
-   ```
-
-2. Install dependencies:
-   ```bash
-   go mod download
-   ```
-
-### Compilation
-
-To build for your current platform:
-```bash
-go build -o torrent-class ./cmd/distributor
-```
-
-### Build Automation
-
-To cross-compile binaries for the main supported platforms (Windows, Linux, macOS):
-```bash
-go run scripts/build.go
-```
-The compiled binaries will be saved in the `releases/` folder.
-
-## Usage
-
-Torrent Class can be run in two modes: `seed` and `download`.
-
-#### Seeding a File/Folder
-
-To share a file or a whole directory, run the binary:
+### 3. CLI Mode (Advanced)
+For scripts or specific configurations, use command-line flags:
 
 ```bash
-./torrent-class-linux-amd64 -m seed -p <path-to-file-or-folder>
-```
-*(On Windows, use `.\torrent-class-windows-amd64.exe`)*
+# Seed a folder
+./torrent-class -m seed -p path/to/folder
 
-When seeding, the application automatically starts an HTTP server (default port 8000) so you can distribute the binary to other machines via their web browser.
-
-#### Downloading (Default)
-
-To download a file broadcasted on the network, you can simply run it without flags (or specify a destination path):
-
-```bash
-./torrent-class-linux-amd64 -p <destination-directory>
+# Download to a specific folder
+./torrent-class -p path/to/destination
 ```
 
-The application will automatically find the instructor and start the download.
-
-## CLI Flags
-
+**Common Flags:**
 - `-m`, `--mode`: `seed` or `download` (default: `download`)
-- `-p`, `--path`: Path to file/folder to seed or download to (default: `.`)
-- `-i`, `--ip`: Manually specify the local IP to broadcast (optional)
-- `-l`, `--listen`: Port for BitTorrent listening (default: `4242`)
-- `-x`, `--magnet`: Magnet link for download mode (optional)
-- `-s`, `--http-port`: Port for the HTTP distribution server (default: `8000`)
+- `-p`, `--path`: Path to file/folder to seed or destination path.
+- `-i`, `--ip`: Manually specify your local IP if needed.
 
-## Project Structure
+## Documentation
 
-- `cmd/distributor`: Main entry point and CLI logic.
-- `pkg/discovery`: Implementation of the UDP broadcast protocol for peer discovery.
-- `pkg/engine`: Torrent handling and peer management.
-- `pkg/tui`: Terminal user interface using Bubble Tea and Lip Gloss.
-- `.torrent.bolt.db`: (Auto-generated) Local database for torrent metadata and peer cache.
+- **[Technical Guide](docs/TECHNICAL.md)**: Details about the P2P engine and discovery protocol.
+- **[Build Guide](docs/BUILD.md)**: Instructions for developers building from source.
 
-## Protocol Details
+## Dependencies
 
-The system uses a custom UDP broadcast protocol for discovery on port 4243. This allows clients to immediately establish TCP connections for data transfer without external infrastructure.
+- `github.com/anacrolix/torrent`: Core P2P engine.
+- `github.com/charmbracelet/bubbletea`: TUI framework.
+- `github.com/ncruces/zenity`: Native GUI dialogs.
