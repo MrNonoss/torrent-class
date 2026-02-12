@@ -50,6 +50,11 @@ type Model struct {
 	Quitting   bool
 	IsComplete bool
 	HTTPAddr   string // URL for binary distribution
+	// Stats for speed calculation
+	LastBytesRead    int64
+	LastBytesWritten int64
+	DownSpeed        int64
+	UpSpeed          int64
 }
 
 type TickMsg struct{}
@@ -73,6 +78,21 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	case TickMsg:
 		if m.Torrent != nil {
+			stats := m.Torrent.Stats()
+			currentRead := stats.BytesReadUsefulData.Int64()
+			currentWrite := stats.BytesWrittenData.Int64()
+
+			// Calculate speed if we have previous values
+			if m.LastBytesRead > 0 {
+				m.DownSpeed = currentRead - m.LastBytesRead
+			}
+			if m.LastBytesWritten > 0 {
+				m.UpSpeed = currentWrite - m.LastBytesWritten
+			}
+
+			m.LastBytesRead = currentRead
+			m.LastBytesWritten = currentWrite
+
 			if m.Torrent.Info() != nil {
 				prog := float64(m.Torrent.BytesCompleted()) / float64(m.Torrent.Length())
 				if prog >= 1.0 && m.Torrent.Length() > 0 {
@@ -153,16 +173,22 @@ func (m Model) View() string {
 			s.WriteString("\n\n")
 		}
 
-		s.WriteString(labelStyle.Render("Peers:     "))
+		s.WriteString(labelStyle.Render("Peers:      "))
 		s.WriteString(valueStyle.Render(fmt.Sprintf("%d", stats.ActivePeers)))
-		s.WriteString("\n")
+		s.WriteString("\n\n")
 
-		s.WriteString(labelStyle.Render("Down Rate: "))
-		s.WriteString(valueStyle.Render(humanizeBytes(stats.BytesReadUsefulData.Int64()) + "/s"))
+		s.WriteString(labelStyle.Render("Downloaded: "))
+		s.WriteString(valueStyle.Render(humanizeBytes(stats.BytesReadUsefulData.Int64())))
 		s.WriteString("\n")
+		s.WriteString(labelStyle.Render("Down Speed: "))
+		s.WriteString(valueStyle.Render(humanizeBytes(m.DownSpeed) + "/s"))
+		s.WriteString("\n\n")
 
-		s.WriteString(labelStyle.Render("Up Rate:   "))
-		s.WriteString(valueStyle.Render(humanizeBytes(stats.BytesWrittenData.Int64()) + "/s"))
+		s.WriteString(labelStyle.Render("Uploaded:   "))
+		s.WriteString(valueStyle.Render(humanizeBytes(stats.BytesWrittenData.Int64())))
+		s.WriteString("\n")
+		s.WriteString(labelStyle.Render("Up Speed:   "))
+		s.WriteString(valueStyle.Render(humanizeBytes(m.UpSpeed) + "/s"))
 		s.WriteString("\n")
 	}
 
