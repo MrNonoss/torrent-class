@@ -10,6 +10,12 @@ A lightweight, local-network peer-to-peer file distribution system built with Go
 - **Viral Seeding**: Downloaders automatically help share parts with others.
 - **Premium TUI**: A sleek terminal user interface for monitoring transfers.
 
+## Previews
+
+| Seeding (Windows) | Downloading (macOS) |
+|:---:|:---:|
+| <img src="assets/Seeder.png" width="400" alt="Seeding"> | <img src="assets/Downloader.png" width="450" alt="Downloading"> |
+
 ## Getting Started
 
 ### 1. Download
