@@ -163,84 +163,104 @@ func main() {
 	var t *torrent.Torrent
 	var actualMagnet string
 
-	if mode == "seed" {
-		t, err = eng.CreateTorrentFromPath(dataDir)
-		if err != nil {
-			log.Fatalf("Failed to create torrent: %v", err)
-		}
-
-		// Wait for info to be available
-		<-t.GotInfo()
-
-		magnetLink := eng.GetMagnetLink(t)
-		actualMagnet = magnetLink
-
-		// Start broadcasting
-		broadcaster := discovery.NewBroadcaster(magnetLink, port)
-		go broadcaster.Start()
-
-		// Start HTTP server for binary distribution
-		exePath, _ := os.Executable()
-		exeDir := filepath.Dir(exePath)
-		go func() {
-			addr := fmt.Sprintf(":%d", httpPort)
-			http.Handle("/", http.FileServer(http.Dir(exeDir)))
-			log.Printf("Starting binary distribution server on %s", addr)
-			if err := http.ListenAndServe(addr, nil); err != nil {
-				log.Printf("HTTP server error: %v", err)
-			}
-		}()
-	} else if mode == "download" {
-		actualMagnet = magnet
-		if actualMagnet == "" {
-			listener := discovery.NewListener()
-			go listener.Listen()
-			info := <-listener.Foundchan
-			actualMagnet = info.Magnet
-
-			t, err = eng.AddTorrentByMagnet(actualMagnet)
-			if err != nil {
-				log.Fatalf("Failed to add magnet: %v", err)
-			}
-
-			// Add the seeder as a peer immediately
-			eng.AddPeer(t, info.IP, info.Port)
-
-			// Viral Seeding: Start broadcasting once we have the magnet link
-			broadcaster := discovery.NewBroadcaster(actualMagnet, port)
-			go broadcaster.Start()
-		} else {
-			t, err = eng.AddTorrentByMagnet(actualMagnet)
-			if err != nil {
-				log.Fatalf("Failed to add magnet: %v", err)
-			}
-
-			// Viral Seeding: Start broadcasting the magnet link we provided
-			broadcaster := discovery.NewBroadcaster(actualMagnet, port)
-			go broadcaster.Start()
-		}
-
-	} else {
-		log.Fatalf("Unknown mode: %s", mode)
-	}
-
-	// Initialize TUI
+	// Initialize TUI Model
 	var httpAddr string
 	if mode == "seed" {
 		httpAddr = fmt.Sprintf("http://%s:%d", localIP, httpPort)
+
+		// Start HTTP server immediately for binary distribution
+		exePath, _ := os.Executable()
+		exeDir := filepath.Dir(exePath)
+		mux := http.NewServeMux()
+		mux.Handle("/", http.FileServer(http.Dir(exeDir)))
+		go func() {
+			addr := fmt.Sprintf(":%d", httpPort)
+			if err := http.ListenAndServe(addr, mux); err != nil {
+				log.Printf("HTTP server error: %v", err)
+			}
+		}()
 	}
 
 	m := tui.Model{
-		Mode:     mode,
-		IP:       localIP,
-		Port:     port,
-		Magnet:   actualMagnet,
-		HTTPAddr: httpAddr,
-		Torrent:  t,
-		Progress: progress.New(progress.WithDefaultGradient()),
+		Mode:      mode,
+		IP:        localIP,
+		Port:      port,
+		Magnet:    actualMagnet,
+		HTTPAddr:  httpAddr,
+		IsHashing: mode == "seed",
+		Progress:  progress.New(progress.WithDefaultGradient()),
 	}
 
 	p := tea.NewProgram(m)
+
+	// Seeding/Downloading Logic in Background
+	go func() {
+		if mode == "seed" {
+			t, err = eng.CreateTorrentFromPathWithProgress(dataDir, func(read, total int64) {
+				if total > 0 {
+					p.Send(tui.HashingProgressMsg(float64(read) / float64(total)))
+				}
+			})
+			if err != nil {
+				log.Printf("Failed to create torrent: %v", err)
+				return
+			}
+
+			// Wait for info to be available
+			<-t.GotInfo()
+
+			magnetLink := eng.GetMagnetLink(t)
+			p.Send(tui.TorrentLoadedMsg{
+				Torrent: t,
+				Magnet:  magnetLink,
+			})
+
+			// Start broadcasting
+			broadcaster := discovery.NewBroadcaster(magnetLink, port)
+			go broadcaster.Start()
+		} else if mode == "download" {
+			if actualMagnet == "" {
+				listener := discovery.NewListener()
+				go listener.Listen()
+				info := <-listener.Foundchan
+				actualMagnet = info.Magnet
+
+				t, err = eng.AddTorrentByMagnet(actualMagnet)
+				if err != nil {
+					log.Printf("Failed to add magnet: %v", err)
+					return
+				}
+
+				// Add the seeder as a peer immediately
+				eng.AddPeer(t, info.IP, info.Port)
+
+				p.Send(tui.TorrentLoadedMsg{
+					Torrent: t,
+					Magnet:  actualMagnet,
+				})
+
+				// Viral Seeding: Start broadcasting once we have the magnet link
+				broadcaster := discovery.NewBroadcaster(actualMagnet, port)
+				go broadcaster.Start()
+			} else {
+				t, err = eng.AddTorrentByMagnet(actualMagnet)
+				if err != nil {
+					log.Printf("Failed to add magnet: %v", err)
+					return
+				}
+
+				p.Send(tui.TorrentLoadedMsg{
+					Torrent: t,
+					Magnet:  actualMagnet,
+				})
+
+				// Viral Seeding: Start broadcasting the magnet link we provided
+				broadcaster := discovery.NewBroadcaster(actualMagnet, port)
+				go broadcaster.Start()
+			}
+		}
+	}()
+
 	if _, err := p.Run(); err != nil {
 		log.Fatalf("TUI Error: %v", err)
 	}

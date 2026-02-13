@@ -2,6 +2,8 @@ package engine
 
 import (
 	"fmt"
+	"io"
+	"os"
 	"path/filepath"
 
 	"github.com/anacrolix/torrent"
@@ -38,18 +40,103 @@ func NewEngine(dataDir string, listenPort int) (*Engine, error) {
 
 // CreateTorrentFromPath creates a torrent from a file or directory
 func (e *Engine) CreateTorrentFromPath(path string) (*torrent.Torrent, error) {
-	info := metainfo.Info{
-		PieceLength: 256 * 1024, // 256KB pieces
-	}
+	return e.CreateTorrentFromPathWithProgress(path, nil)
+}
 
+// ProgressReader wraps an io.Reader and reports progress
+type ProgressReader struct {
+	r          io.Reader
+	total      int64
+	read       int64
+	onProgress func(int64, int64)
+}
+
+func (pr *ProgressReader) Read(p []byte) (n int, err error) {
+	n, err = pr.r.Read(p)
+	pr.read += int64(n)
+	if pr.onProgress != nil {
+		pr.onProgress(pr.read, pr.total)
+	}
+	return
+}
+
+// CreateTorrentFromPathWithProgress creates a torrent from a file or directory with hashing progress
+func (e *Engine) CreateTorrentFromPathWithProgress(path string, onProgress func(int64, int64)) (*torrent.Torrent, error) {
 	absPath, err := filepath.Abs(path)
 	if err != nil {
 		return nil, err
 	}
 
-	err = info.BuildFromFilePath(absPath)
+	info := metainfo.Info{
+		PieceLength: 256 * 1024, // 256KB pieces
+		Name:        filepath.Base(absPath),
+	}
+
+	var files []string
+	var totalSize int64
+
+	fi, err := os.Stat(absPath)
 	if err != nil {
-		return nil, fmt.Errorf("failed to build info from path: %w", err)
+		return nil, err
+	}
+
+	if fi.IsDir() {
+		err = filepath.Walk(absPath, func(p string, info os.FileInfo, err error) error {
+			if err != nil {
+				return err
+			}
+			if !info.IsDir() {
+				files = append(files, p)
+				totalSize += info.Size()
+			}
+			return nil
+		})
+		if err != nil {
+			return nil, err
+		}
+
+		for _, f := range files {
+			rel, err := filepath.Rel(absPath, f)
+			if err != nil {
+				return nil, err
+			}
+			ffi, err := os.Stat(f)
+			if err != nil {
+				return nil, err
+			}
+			info.Files = append(info.Files, metainfo.FileInfo{
+				Path:   filepath.SplitList(rel),
+				Length: ffi.Size(),
+			})
+		}
+	} else {
+		totalSize = fi.Size()
+		info.Length = totalSize
+		files = []string{absPath}
+	}
+
+	// Create a concatenated reader for all files
+	var readers []io.Reader
+	for _, f := range files {
+		file, err := os.Open(f)
+		if err != nil {
+			return nil, err
+		}
+		defer file.Close()
+		readers = append(readers, file)
+	}
+
+	multiReader := io.MultiReader(readers...)
+	progressReader := &ProgressReader{
+		r:          multiReader,
+		total:      totalSize,
+		onProgress: onProgress,
+	}
+
+	// Generate pieces
+	info.Pieces, err = metainfo.GeneratePieces(progressReader, info.PieceLength, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate pieces: %w", err)
 	}
 
 	infoBytes, err := bencode.Marshal(info)

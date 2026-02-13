@@ -41,15 +41,17 @@ var (
 )
 
 type Model struct {
-	Mode       string
-	IP         string
-	Port       int
-	Magnet     string
-	Torrent    *torrent.Torrent
-	Progress   progress.Model
-	Quitting   bool
-	IsComplete bool
-	HTTPAddr   string // URL for binary distribution
+	Mode            string
+	IP              string
+	Port            int
+	Magnet          string
+	Torrent         *torrent.Torrent
+	Progress        progress.Model
+	Quitting        bool
+	IsComplete      bool
+	HTTPAddr        string // URL for binary distribution
+	IsHashing       bool
+	HashingProgress float64
 	// Stats for speed calculation
 	LastBytesRead    int64
 	LastBytesWritten int64
@@ -58,6 +60,11 @@ type Model struct {
 }
 
 type TickMsg struct{}
+type HashingProgressMsg float64
+type TorrentLoadedMsg struct {
+	Torrent *torrent.Torrent
+	Magnet  string
+}
 
 func Tick() tea.Cmd {
 	return tea.Tick(time.Second, func(t time.Time) tea.Msg {
@@ -76,6 +83,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.Quitting = true
 			return m, tea.Quit
 		}
+	case tea.WindowSizeMsg:
+		m.Progress.Width = msg.Width - 4
+		return m, nil
+	case HashingProgressMsg:
+		m.IsHashing = true
+		m.HashingProgress = float64(msg)
+		return m, nil
+
+	case TorrentLoadedMsg:
+		m.IsHashing = false
+		m.Torrent = msg.Torrent
+		m.Magnet = msg.Magnet
+		return m, nil
+
 	case TickMsg:
 		if m.Torrent != nil {
 			stats := m.Torrent.Stats()
@@ -122,10 +143,32 @@ func (m Model) View() string {
 	s.WriteString(infoStyle.Render(fmt.Sprintf("Port:     %d", m.Port)))
 	s.WriteString("\n\n")
 
-	if m.Mode == "seed" {
-		s.WriteString(labelStyle.Render("Status:    "))
+	// Status Line
+	s.WriteString(labelStyle.Render("Status:    "))
+	if m.IsHashing {
+		s.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#FACC15")).Render("HASHING FILES..."))
+	} else if m.Mode == "seed" {
 		s.WriteString(successStyle.Render("SEEDING"))
+	} else {
+		if m.IsComplete {
+			s.WriteString(successStyle.Render("✓ COMPLETE"))
+		} else if m.Torrent == nil {
+			s.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#FACC15")).Render("WAITING FOR MAGNET..."))
+		} else {
+			s.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#FACC15")).Render("DOWNLOADING"))
+		}
+	}
+	s.WriteString("\n")
+
+	// Info section (Magnet or Hashing Progress)
+	if m.IsHashing {
 		s.WriteString("\n")
+		s.WriteString(labelStyle.Render("Progress:  "))
+		s.WriteString(valueStyle.Render(fmt.Sprintf("%.1f%%", m.HashingProgress*100)))
+		s.WriteString("\n")
+		s.WriteString("  " + m.Progress.ViewAs(m.HashingProgress))
+		s.WriteString("\n")
+	} else if m.Mode == "seed" {
 		s.WriteString(labelStyle.Render("Magnet:    "))
 		displayMagnet := "None"
 		if len(m.Magnet) > 20 {
@@ -134,24 +177,22 @@ func (m Model) View() string {
 			displayMagnet = m.Magnet
 		}
 		s.WriteString(valueStyle.Render(displayMagnet))
-		s.WriteString("\n\n")
+		s.WriteString("\n")
 	} else {
-		s.WriteString(labelStyle.Render("Status:    "))
-		if m.IsComplete {
-			s.WriteString(successStyle.Render("✓ COMPLETE"))
-		} else {
-			s.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#FACC15")).Render("DOWNLOADING"))
-		}
-		s.WriteString("\n\n")
+		s.WriteString("\n")
 	}
 
+	s.WriteString("\n")
+
+	// Deployment Info - Only show this once
 	if m.HTTPAddr != "" {
 		s.WriteString(labelStyle.Render("Deploy:    "))
 		s.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#34D399")).Underline(true).Render(m.HTTPAddr))
 		s.WriteString("\n\n")
 	}
 
-	if m.Torrent != nil {
+	// Active Torrent Stats
+	if m.Torrent != nil && !m.IsHashing {
 		stats := m.Torrent.Stats()
 
 		if m.Torrent.Info() == nil {
