@@ -19,7 +19,7 @@ A lightweight, local-network peer-to-peer file distribution system built with Go
 ## Getting Started
 
 ### 1. Download
-Grab the latest binary for your platform from the [Releases](https://github.com/your-repo/releases) section.
+Grab the latest binary for your platform from the [Releases](https://github.com/MrNonoss/torrent-class/releases) section.
 
 ### 2. Usage (Interactive Mode)
 Simply **double-click** the binary (or run it without flags). 
