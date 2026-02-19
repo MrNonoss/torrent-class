@@ -2,9 +2,12 @@ package discovery
 
 import (
 	"fmt"
+	"log"
 	"net"
 	"strings"
 	"time"
+
+	"torrent-class/pkg/netutils"
 )
 
 const (
@@ -73,9 +76,10 @@ func (b *Broadcaster) sendBroadcastOnIP(ipnet *net.IPNet) {
 	message := []byte(fmt.Sprintf("%s%s|%s|%d", MagicPrefix, b.MagnetLink, localIP, b.ListenPort))
 
 	// Resolve the broadcast address for this subnet
-	broadcastAddr := getBroadcastAddr(ipnet)
+	broadcastAddr := netutils.GetBroadcastAddr(ipnet)
 	addr, err := net.ResolveUDPAddr("udp4", fmt.Sprintf("%s:%d", broadcastAddr, BroadcastPort))
 	if err != nil {
+		log.Printf("UDP Discovery Error: Failed to resolve broadcast address: %v", err)
 		return
 	}
 
@@ -87,6 +91,7 @@ func (b *Broadcaster) sendBroadcastOnIP(ipnet *net.IPNet) {
 		// Fallback: try without binding
 		conn, err = net.ListenUDP("udp4", nil)
 		if err != nil {
+			log.Printf("UDP Discovery Error: Failed to listen: %v", err)
 			return
 		}
 	}
@@ -97,63 +102,6 @@ func (b *Broadcaster) sendBroadcastOnIP(ipnet *net.IPNet) {
 	// Also send to limited broadcast
 	limAddr, _ := net.ResolveUDPAddr("udp4", fmt.Sprintf("255.255.255.255:%d", BroadcastPort))
 	_, _ = conn.WriteToUDP(message, limAddr)
-}
-
-func getBroadcastAddr(ipnet *net.IPNet) string {
-	ip := ipnet.IP.To4()
-	mask := ipnet.Mask
-	broadcast := make(net.IP, len(ip))
-	for i := 0; i < len(ip); i++ {
-		broadcast[i] = ip[i] | ^mask[i]
-	}
-	return broadcast.String()
-}
-
-func getLocalIP() string {
-	addrs, err := net.InterfaceAddrs()
-	if err != nil {
-		return "127.0.0.1"
-	}
-
-	var bestIP string
-	for _, address := range addrs {
-		if ipnet, ok := address.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
-			ip := ipnet.IP.To4()
-			if ip == nil {
-				continue
-			}
-
-			// Skip APIPA (169.254.x.x)
-			if ip[0] == 169 && ip[1] == 254 {
-				continue
-			}
-
-			// If it's a private network address, it's a very good candidate
-			if isPrivateIP(ip) {
-				return ip.String()
-			}
-
-			bestIP = ip.String()
-		}
-	}
-
-	if bestIP != "" {
-		return bestIP
-	}
-	return "127.0.0.1"
-}
-
-func isPrivateIP(ip net.IP) bool {
-	if ip[0] == 10 {
-		return true
-	}
-	if ip[0] == 172 && (ip[1] >= 16 && ip[1] <= 31) {
-		return true
-	}
-	if ip[0] == 192 && ip[1] == 168 {
-		return true
-	}
-	return false
 }
 
 func (b *Broadcaster) Stop() {

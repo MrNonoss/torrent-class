@@ -9,6 +9,9 @@ import (
 	"github.com/charmbracelet/bubbles/progress"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+
+	"torrent-class/pkg/netutils"
+	"torrent-class/pkg/utils"
 )
 
 var (
@@ -57,6 +60,8 @@ type Model struct {
 	LastBytesWritten int64
 	DownSpeed        int64
 	UpSpeed          int64
+	SkippedFiles     []string                 // Track files skipped due to permission errors
+	Interfaces       []netutils.InterfaceInfo // Available network interfaces
 }
 
 type TickMsg struct{}
@@ -65,6 +70,7 @@ type TorrentLoadedMsg struct {
 	Torrent *torrent.Torrent
 	Magnet  string
 }
+type SkippedFilesMsg []string
 
 func Tick() tea.Cmd {
 	return tea.Tick(time.Second, func(t time.Time) tea.Msg {
@@ -95,6 +101,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.IsHashing = false
 		m.Torrent = msg.Torrent
 		m.Magnet = msg.Magnet
+		return m, nil
+	case SkippedFilesMsg:
+		m.SkippedFiles = append(m.SkippedFiles, msg...)
 		return m, nil
 
 	case TickMsg:
@@ -138,10 +147,30 @@ func (m Model) View() string {
 	s.WriteString(titleStyle.Render(fmt.Sprintf(" Torrent Class - %s ", strings.ToUpper(m.Mode))))
 	s.WriteString("\n\n")
 
-	s.WriteString(infoStyle.Render(fmt.Sprintf("Local IP: %s", m.IP)))
+	s.WriteString(infoStyle.Render("Local IP: ") + lipgloss.NewStyle().Foreground(lipgloss.Color("#F43F5E")).Underline(true).Bold(true).Render(m.IP))
 	s.WriteString("\n")
 	s.WriteString(infoStyle.Render(fmt.Sprintf("Port:     %d", m.Port)))
 	s.WriteString("\n\n")
+
+	if len(m.Interfaces) > 1 {
+		s.WriteString(labelStyle.Render("Detected Adapters:"))
+		s.WriteString("\n")
+		for _, iface := range m.Interfaces {
+			prefix := "  "
+			if iface.IP == m.IP {
+				prefix = "> "
+			}
+			s.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#94A3B8")).Render(fmt.Sprintf("%s%s (%s)", prefix, iface.IP, iface.Subnet)))
+			s.WriteString("\n")
+		}
+		s.WriteString(lipgloss.NewStyle().Italic(true).Foreground(lipgloss.Color("#64748B")).Render("  Tip: Peers MUST be on the same subnet as your IP"))
+		s.WriteString("\n\n")
+	}
+
+	if len(m.SkippedFiles) > 0 {
+		s.WriteString(errorStyle.Render(fmt.Sprintf("⚠ WARNING: %d item(s) skipped due to permission errors", len(m.SkippedFiles))))
+		s.WriteString("\n\n")
+	}
 
 	// Status Line
 	s.WriteString(labelStyle.Render("Status:    "))
@@ -219,17 +248,17 @@ func (m Model) View() string {
 		s.WriteString("\n\n")
 
 		s.WriteString(labelStyle.Render("Downloaded: "))
-		s.WriteString(valueStyle.Render(humanizeBytes(stats.BytesReadUsefulData.Int64())))
+		s.WriteString(valueStyle.Render(utils.HumanizeBytes(stats.BytesReadUsefulData.Int64())))
 		s.WriteString("\n")
 		s.WriteString(labelStyle.Render("Down Speed: "))
-		s.WriteString(valueStyle.Render(humanizeBytes(m.DownSpeed) + "/s"))
+		s.WriteString(valueStyle.Render(utils.HumanizeBytes(m.DownSpeed) + "/s"))
 		s.WriteString("\n\n")
 
 		s.WriteString(labelStyle.Render("Uploaded:   "))
-		s.WriteString(valueStyle.Render(humanizeBytes(stats.BytesWrittenData.Int64())))
+		s.WriteString(valueStyle.Render(utils.HumanizeBytes(stats.BytesWrittenData.Int64())))
 		s.WriteString("\n")
 		s.WriteString(labelStyle.Render("Up Speed:   "))
-		s.WriteString(valueStyle.Render(humanizeBytes(m.UpSpeed) + "/s"))
+		s.WriteString(valueStyle.Render(utils.HumanizeBytes(m.UpSpeed) + "/s"))
 		s.WriteString("\n")
 	}
 
@@ -237,17 +266,4 @@ func (m Model) View() string {
 	s.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("241")).Render("  Appuyez sur 'q' pour quitter"))
 
 	return s.String()
-}
-
-func humanizeBytes(b int64) string {
-	const unit = 1024
-	if b < unit {
-		return fmt.Sprintf("%d B", b)
-	}
-	div, exp := int64(unit), 0
-	for n := b / unit; n >= unit; n /= unit {
-		div *= unit
-		exp++
-	}
-	return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "KMGTPE"[exp])
 }

@@ -4,25 +4,27 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"net"
+	"net/http"
+	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
 
 	"torrent-class/pkg/discovery"
 	"torrent-class/pkg/engine"
+	"torrent-class/pkg/netutils"
 	"torrent-class/pkg/tui"
-
-	"net/http"
-	"os"
 
 	"github.com/anacrolix/torrent"
 	"github.com/charmbracelet/bubbles/progress"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/mattn/go-isatty"
 	"github.com/ncruces/zenity"
 )
 
 func main() {
 	var mode, path, magnet, ipOverride string
-	var port, httpPort int
+	var port, httpPort, maxConns int
 
 	flag.StringVar(&mode, "mode", "download", "Mode: seed or download")
 	flag.StringVar(&mode, "m", "download", "Short for --mode")
@@ -41,6 +43,9 @@ func main() {
 
 	flag.StringVar(&ipOverride, "ip", "", "Manually specify the local IP to broadcast")
 	flag.StringVar(&ipOverride, "i", "", "Short for --ip")
+
+	flag.IntVar(&maxConns, "max-conns", 200, "Maximum simultaneous connections for speed (default: 200)")
+	flag.IntVar(&maxConns, "c", 200, "Short for --max-conns")
 
 	flag.Parse()
 
@@ -137,6 +142,17 @@ func main() {
 	// but standard 'flag' package doesn't handle aliases perfectly out of the box.
 	// We'll trust the user or the last value.
 
+	// TTY Check and Relaunch for Linux (Moved after parameter collection)
+	if runtime.GOOS == "linux" && os.Getenv("TORRENT_CLASS_RELAUNCHED") == "" {
+		if !isatty.IsTerminal(os.Stdin.Fd()) && !isatty.IsCygwinTerminal(os.Stdin.Fd()) {
+			term := findTerminal()
+			if term != "" {
+				relaunchInTerminal(term, mode, path, ipOverride, port, httpPort)
+				return // Exit original process
+			}
+		}
+	}
+
 	dataDir, err := filepath.Abs(path)
 	if err != nil {
 		log.Fatalf("Invalid path: %v", err)
@@ -148,16 +164,17 @@ func main() {
 		storageDir = filepath.Dir(dataDir)
 	}
 
-	eng, err := engine.NewEngine(storageDir, port)
+	eng, err := engine.NewEngine(storageDir, port, maxConns)
 	if err != nil {
 		log.Fatalf("Failed to start engine: %v", err)
 	}
 	defer eng.Close()
 
-	// Get local IP
+	// Get local IP and all valid interfaces
+	interfaces, _ := netutils.GetValidInterfaces()
 	localIP := ipOverride
 	if localIP == "" {
-		localIP = getLocalIP()
+		localIP = netutils.GetLocalIP()
 	}
 
 	var t *torrent.Torrent
@@ -182,13 +199,14 @@ func main() {
 	}
 
 	m := tui.Model{
-		Mode:      mode,
-		IP:        localIP,
-		Port:      port,
-		Magnet:    actualMagnet,
-		HTTPAddr:  httpAddr,
-		IsHashing: mode == "seed",
-		Progress:  progress.New(progress.WithDefaultGradient()),
+		Mode:       mode,
+		IP:         localIP,
+		Port:       port,
+		Magnet:     actualMagnet,
+		HTTPAddr:   httpAddr,
+		IsHashing:  mode == "seed",
+		Progress:   progress.New(progress.WithDefaultGradient()),
+		Interfaces: interfaces,
 	}
 
 	p := tea.NewProgram(m)
@@ -196,7 +214,8 @@ func main() {
 	// Seeding/Downloading Logic in Background
 	go func() {
 		if mode == "seed" {
-			t, err = eng.CreateTorrentFromPathWithProgress(dataDir, func(read, total int64) {
+			var skipped []string
+			t, skipped, err = eng.CreateTorrentFromPathWithProgress(dataDir, func(read, total int64) {
 				if total > 0 {
 					p.Send(tui.HashingProgressMsg(float64(read) / float64(total)))
 				}
@@ -204,6 +223,10 @@ func main() {
 			if err != nil {
 				log.Printf("Failed to create torrent: %v", err)
 				return
+			}
+
+			if len(skipped) > 0 {
+				p.Send(tui.SkippedFilesMsg(skipped))
 			}
 
 			// Wait for info to be available
@@ -264,51 +287,73 @@ func main() {
 	if _, err := p.Run(); err != nil {
 		log.Fatalf("TUI Error: %v", err)
 	}
+
+	// Keep terminal open if we relaunched
+	if os.Getenv("TORRENT_CLASS_RELAUNCHED") == "1" {
+		fmt.Println("\nPress Enter to exit...")
+		var b [1]byte
+		os.Stdin.Read(b[:])
+	}
 }
 
-func getLocalIP() string {
-	addrs, err := net.InterfaceAddrs()
-	if err != nil {
-		return "Unknown"
+func findTerminal() string {
+	terminals := []string{
+		"x-terminal-emulator",
+		"gnome-terminal",
+		"konsole",
+		"xfce4-terminal",
+		"lxterminal",
+		"kitty",
+		"alacritty",
+		"xterm",
 	}
 
-	var bestIP string
-	for _, address := range addrs {
-		if ipnet, ok := address.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
-			ip := ipnet.IP.To4()
-			if ip == nil {
-				continue
-			}
-
-			// Skip APIPA (169.254.x.x)
-			if ip[0] == 169 && ip[1] == 254 {
-				continue
-			}
-
-			// If it's a private network address, it's a very good candidate
-			if isPrivateIP(ip) {
-				return ip.String()
-			}
-
-			bestIP = ip.String()
+	for _, t := range terminals {
+		p, err := exec.LookPath(t)
+		if err == nil {
+			return p
 		}
 	}
-
-	if bestIP != "" {
-		return bestIP
-	}
-	return "127.0.0.1"
+	return ""
 }
 
-func isPrivateIP(ip net.IP) bool {
-	if ip[0] == 10 {
-		return true
+func relaunchInTerminal(terminalPath string, mode, path, ip string, port, httpPort int) {
+	exe, err := os.Executable()
+	if err != nil {
+		exe = os.Args[0]
 	}
-	if ip[0] == 172 && (ip[1] >= 16 && ip[1] <= 31) {
-		return true
+
+	// Build relaunch command with collected parameters
+	os.Setenv("TORRENT_CLASS_RELAUNCHED", "1")
+
+	base := filepath.Base(terminalPath)
+
+	// Collect arguments to pass to the new process
+	args := []string{
+		"--mode", mode,
+		"--path", path,
+		"--port", fmt.Sprintf("%d", port),
+		"--http-port", fmt.Sprintf("%d", httpPort),
 	}
-	if ip[0] == 192 && ip[1] == 168 {
-		return true
+	if ip != "" {
+		args = append(args, "--ip", ip)
 	}
-	return false
+
+	var cmdArgs []string
+	switch base {
+	case "gnome-terminal":
+		cmdArgs = append(cmdArgs, "--", exe)
+		cmdArgs = append(cmdArgs, args...)
+	case "konsole":
+		cmdArgs = append(cmdArgs, "-e", exe)
+		cmdArgs = append(cmdArgs, args...)
+	default:
+		// Most others support -e command [args]
+		cmdArgs = append(cmdArgs, "-e", exe)
+		cmdArgs = append(cmdArgs, args...)
+	}
+
+	cmd := exec.Command(terminalPath, cmdArgs...)
+	_ = cmd.Start()
+	os.Exit(0)
 }
