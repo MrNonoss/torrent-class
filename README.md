@@ -40,7 +40,21 @@ For scripts or specific configurations, use command-line flags:
 **Common Flags:**
 - `-m`, `--mode`: `seed` or `download` (default: `download`)
 - `-p`, `--path`: Path to file/folder to seed or destination path.
-- `-i`, `--ip`: Manually specify your local IP if needed.
+- `-i`, `--ip`: Manually specify your local IP/Adapter if needed.
+- `-c`, `--max-conns`: Max simultaneous connections (default: 200). Increase for faster transfers in large groups.
+
+## Network Requirements
+
+> [!IMPORTANT]
+> **All machines must be on the same Local Subnet.** Peer discovery relies on UDP broadcast, which typically does not cross between different subnets or VLANs (e.g., student Wi-Fi vs. teacher Ethernet).
+
+### Multiple Network Adapters
+If your machine has multiple adapters (Wi-Fi, Ethernet, Virtual Machines):
+1. **Check the TUI**: The app lists all "Detected Adapters". Ensure the **Local IP** (shown in red) matches the network your students are using.
+2. **Override if necessary**: If the app selects the wrong adapter (like a VM interface), use the `-i` flag to force it:
+   ```bash
+   ./torrent-class -i 192.168.1.15
+   ```
 
 ## Documentation
 
