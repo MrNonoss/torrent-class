@@ -5,7 +5,8 @@ A lightweight, local-network peer-to-peer file distribution system built with Go
 ## Features
 
 - **Double-Click Experience**: Run the program without flags to be guided by native popups.
-- **Local Discovery**: Automatic peer discovery on local networks via UDP broadcast.
+- **Hybrid Discovery**: Automatic peer discovery on local networks via UDP broadcast or with an **HTTP fallback** for restricted environments.
+- **Manual Peer Entry**: Option to enter the Instructor's IP directly if automatic discovery is blocked.
 - **No Dependencies**: Works without central trackers or DHT for local-only operation.
 - **Viral Seeding**: Downloaders automatically help share parts with others.
 - **Premium TUI**: A sleek terminal user interface for monitoring transfers.
@@ -24,7 +25,8 @@ Grab the latest binary for your platform from the [Releases](https://github.com/
 ### 2. Usage (Interactive Mode)
 Simply **double-click** the binary (or run it without flags). 
 - Select **Seed** to share a file or folder.
-- Select **Download** to start receiving files broadcasted on the network.
+- Select **Download** to start receiving files. You will be asked if you want **Automatic** (UDP) or **Manual** (IP) discovery.
+- If automatic discovery fails, the app will prompt for the Instructor's IP after 25 seconds.
 
 ### 3. CLI Mode (Advanced)
 For scripts or specific configurations, use command-line flags:
@@ -40,13 +42,18 @@ For scripts or specific configurations, use command-line flags:
 **Common Flags:**
 - `-m`, `--mode`: `seed` or `download` (default: `download`)
 - `-p`, `--path`: Path to file/folder to seed or destination path.
+- `-s`, `--seeder`: Directly specify the Instructor's IP (e.g., `-s 192.168.1.10`).
 - `-i`, `--ip`: Manually specify your local IP/Adapter if needed.
-- `-c`, `--max-conns`: Max simultaneous connections (default: 200). Increase for faster transfers in large groups.
+- `-c`, `--max-conns`: Max simultaneous connections (default: 200).
+- `-b`, `--bit-port`: Override the Bittorrent P2P port (default: 8081).
+- `-l`, `--http-port`: Override the HTTP distribution port (default: 8000).
 
 ## Network Requirements
 
 > [!IMPORTANT]
-> **All machines must be on the same Local Subnet.** Peer discovery relies on UDP broadcast, which typically does not cross between different subnets or VLANs (e.g., student Wi-Fi vs. teacher Ethernet).
+> **All machines must be on the same Local Subnet.** Peer discovery primarily relies on UDP broadcast.
+> 
+> **Restricted Networks**: If you are on a corporate network where UDP is blocked, Torrent Class will automatically fallback to **HTTP Retrieval** after 25 seconds. You can also use "Manual Mode" at startup to enter the seeder's IP directly.
 
 ### Multiple Network Adapters
 If your machine has multiple adapters (Wi-Fi, Ethernet, Virtual Machines):
@@ -65,4 +72,7 @@ If your machine has multiple adapters (Wi-Fi, Ethernet, Virtual Machines):
 
 - `github.com/anacrolix/torrent`: Core P2P engine.
 - `github.com/charmbracelet/bubbletea`: TUI framework.
+- `github.com/charmbracelet/bubbles`: TUI component library (Progress Bar).
+- `github.com/charmbracelet/lipgloss`: Terminal layout and styling.
 - `github.com/ncruces/zenity`: Native GUI dialogs.
+- `github.com/mattn/go-isatty`: Terminal capability detection.

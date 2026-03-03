@@ -62,6 +62,7 @@ type Model struct {
 	UpSpeed          int64
 	SkippedFiles     []string                 // Track files skipped due to permission errors
 	Interfaces       []netutils.InterfaceInfo // Available network interfaces
+	FallbackCount    int                      // Countdown for HTTP fallback
 }
 
 type TickMsg struct{}
@@ -131,6 +132,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Safely start/resume download once info is available
 				m.Torrent.DownloadAll()
 			}
+		} else if m.Mode == "download" && !m.Quitting {
+			if m.FallbackCount > 0 {
+				m.FallbackCount--
+			}
 		}
 		return m, Tick()
 	}
@@ -183,6 +188,12 @@ func (m Model) View() string {
 			s.WriteString(successStyle.Render("✓ COMPLETE"))
 		} else if m.Torrent == nil {
 			s.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#FACC15")).Render("WAITING FOR MAGNET..."))
+			s.WriteString("\n")
+			if m.FallbackCount > 0 {
+				s.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#FACC15")).Render(fmt.Sprintf("  %d seconds before HTTP fallback", m.FallbackCount)))
+			} else {
+				s.WriteString(lipgloss.NewStyle().Italic(true).Foreground(lipgloss.Color("#64748B")).Render("  Tip: If this takes too long, check the Instructor's IP."))
+			}
 		} else {
 			s.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#FACC15")).Render("DOWNLOADING"))
 		}

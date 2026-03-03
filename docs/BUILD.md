@@ -41,5 +41,7 @@ The compiled binaries will be saved in the `releases/` folder.
 
 - `github.com/anacrolix/torrent`: Core P2P engine.
 - `github.com/charmbracelet/bubbletea`: TUI framework.
-- `github.com/charmbracelet/lipgloss`: TUI styling.
+- `github.com/charmbracelet/bubbles`: TUI component library (Progress Bar).
+- `github.com/charmbracelet/lipgloss`: Terminal layout and styling.
 - `github.com/ncruces/zenity`: Native GUI dialogs.
+- `github.com/mattn/go-isatty`: Terminal capability detection.
