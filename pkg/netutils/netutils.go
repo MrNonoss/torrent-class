@@ -22,28 +22,41 @@ func GetLocalIP() string {
 
 // GetValidInterfaces returns a list of valid network interfaces and their IPs
 func GetValidInterfaces() ([]InterfaceInfo, error) {
-	addrs, err := net.InterfaceAddrs()
+	ifaces, err := net.Interfaces()
 	if err != nil {
 		return nil, err
 	}
 
 	var results []InterfaceInfo
-	for _, address := range addrs {
-		if ipnet, ok := address.(*net.IPNet); ok && !ipnet.IP.IsLoopback() {
-			ip := ipnet.IP.To4()
-			if ip == nil {
-				continue
-			}
+	for _, iface := range ifaces {
+		// Skip loopback and down interfaces
+		if iface.Flags&net.FlagLoopback != 0 || iface.Flags&net.FlagUp == 0 {
+			continue
+		}
 
-			// Skip APIPA (169.254.x.x)
-			if ip[0] == 169 && ip[1] == 254 {
-				continue
-			}
+		addrs, err := iface.Addrs()
+		if err != nil {
+			continue
+		}
 
-			results = append(results, InterfaceInfo{
-				IP:     ip.String(),
-				Subnet: ipnet.String(),
-			})
+		for _, address := range addrs {
+			if ipnet, ok := address.(*net.IPNet); ok {
+				ip := ipnet.IP.To4()
+				if ip == nil {
+					continue
+				}
+
+				// Skip APIPA (169.254.x.x)
+				if ip[0] == 169 && ip[1] == 254 {
+					continue
+				}
+
+				results = append(results, InterfaceInfo{
+					Name:   iface.Name,
+					IP:     ip.String(),
+					Subnet: ipnet.String(),
+				})
+			}
 		}
 	}
 

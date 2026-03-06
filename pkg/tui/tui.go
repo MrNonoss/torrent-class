@@ -152,7 +152,21 @@ func (m Model) View() string {
 	s.WriteString(titleStyle.Render(fmt.Sprintf(" Torrent Class - %s ", strings.ToUpper(m.Mode))))
 	s.WriteString("\n\n")
 
-	s.WriteString(infoStyle.Render("Local IP: ") + lipgloss.NewStyle().Foreground(lipgloss.Color("#F43F5E")).Underline(true).Bold(true).Render(m.IP))
+	// Find interface name for current IP
+	ifaceName := ""
+	for _, iface := range m.Interfaces {
+		if iface.IP == m.IP {
+			ifaceName = iface.Name
+			break
+		}
+	}
+
+	ipDisplay := m.IP
+	if ifaceName != "" {
+		ipDisplay = fmt.Sprintf("%s (%s)", m.IP, ifaceName)
+	}
+
+	s.WriteString(infoStyle.Render("Local IP: ") + lipgloss.NewStyle().Foreground(lipgloss.Color("#F43F5E")).Underline(true).Bold(true).Render(ipDisplay))
 	s.WriteString("\n")
 	s.WriteString(infoStyle.Render(fmt.Sprintf("Port:     %d", m.Port)))
 	s.WriteString("\n\n")
@@ -165,7 +179,7 @@ func (m Model) View() string {
 			if iface.IP == m.IP {
 				prefix = "> "
 			}
-			s.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#94A3B8")).Render(fmt.Sprintf("%s%s (%s)", prefix, iface.IP, iface.Subnet)))
+			s.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#94A3B8")).Render(fmt.Sprintf("%s%s (%s)", prefix, iface.IP, iface.Name)))
 			s.WriteString("\n")
 		}
 		s.WriteString(lipgloss.NewStyle().Italic(true).Foreground(lipgloss.Color("#64748B")).Render("  Tip: Peers MUST be on the same subnet as your IP"))

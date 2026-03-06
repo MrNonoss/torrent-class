@@ -18,6 +18,7 @@ import (
 	"torrent-class/pkg/engine"
 	"torrent-class/pkg/netutils"
 	"torrent-class/pkg/tui"
+	torrent_utils "torrent-class/pkg/utils"
 
 	"github.com/anacrolix/torrent"
 	"github.com/charmbracelet/bubbles/progress"
@@ -144,6 +145,31 @@ func main() {
 				}
 			}
 		}
+
+		// Network Interface Selection (Interactive Mode Only)
+		if ipOverride == "" {
+			ifaces, _ := netutils.GetValidInterfaces()
+			if len(ifaces) > 1 {
+				var options []string
+				for _, iface := range ifaces {
+					options = append(options, fmt.Sprintf("%-15s (%s)", iface.IP, iface.Name))
+				}
+
+				selected, err := zenity.List(
+					"Multiple network adapters found. Select one to use:",
+					options,
+					zenity.Title("Torrent Class - Network Adapter"),
+					zenity.DefaultItems(options[0]),
+				)
+				if err == nil {
+					// Extract IP from "192.168.1.10 (eth0)"
+					parts := strings.Fields(selected)
+					if len(parts) > 0 {
+						ipOverride = parts[0]
+					}
+				}
+			}
+		}
 	} else {
 		// CLI Validation: If mode is seed, path must be provided (not default ".")
 		pathWasSet := false
@@ -211,8 +237,24 @@ func main() {
 		// Start HTTP server immediately for binary distribution and metadata discovery
 		exePath, _ := os.Executable()
 		exeDir := filepath.Dir(exePath)
+		exeName := filepath.Base(exePath)
+
+		// Create shareable folder with date
+		dateStr := time.Now().Format("2006-01-02")
+		shareDirName := fmt.Sprintf("shareable_%s", dateStr)
+		sharePath := filepath.Join(exeDir, shareDirName)
+
+		// Ensure directory exists
+		os.MkdirAll(sharePath, 0755)
+
+		// Copy binary into shareable folder
+		newExePath := filepath.Join(sharePath, exeName)
+		if err := torrent_utils.CopyFile(exePath, newExePath); err != nil {
+			log.Printf("Failed to copy binary to shareable folder: %v", err)
+		}
+
 		mux := http.NewServeMux()
-		mux.Handle("/", http.FileServer(http.Dir(exeDir)))
+		mux.Handle("/", http.FileServer(http.Dir(sharePath)))
 
 		// Add /info endpoint for HTTP discovery
 		mux.HandleFunc("/info", func(w http.ResponseWriter, r *http.Request) {

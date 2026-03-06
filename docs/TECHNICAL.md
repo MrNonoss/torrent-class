@@ -36,9 +36,15 @@ Built using the **Charmbracelet** stack:
 For users who run the tool without command-line flags, Torrent Class provides a native GUI experience:
 - **Platform Native**: Uses PowerShell/Scripting on Windows, AppleScript on macOS, and zenity/qdbus on Linux.
 - **Simplified Choice**: Logic-driven dialogs guide users through mode selection and file picking.
-- **Discovery Mode**: Users can explicitly choose between "Automatic (UDP)" or "Manual (IP Entry)" at startup.
-- **Safe Dismissal**: Closing a dialog window results in sensible defaults or safe cancellation.
+- **Manual IP Entry**: Option to enter the Instructor's IP directly if automatic discovery is blocked.
+- **Adapter Selection**: If multiple adapters are detected, a `zenity.List` dialog allows explicit selection.
 - **Validation**: Manual IP entries are validated to be proper IPv4 addresses without ports.
+
+### 5. HTTP Isolation & Branding
+In seed mode, the HTTP server provides a clean interface for students:
+- **Shareable Folder**: On startup, the tool creates a `shareable_YYYY-MM-DD` directory.
+- **Binary Copy**: It copies the current executable into this folder.
+- **Clean Listing**: The HTTP server serves this isolated directory, ensuring students only see the necessary files.
 
 ## Network Architecture: "Viral Seeding"
 
