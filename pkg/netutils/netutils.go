@@ -2,6 +2,8 @@ package netutils
 
 import (
 	"net"
+	"sort"
+	"strings"
 )
 
 // InterfaceInfo represents details of a network interface
@@ -81,14 +83,30 @@ func IsPrivateIP(ip net.IP) bool {
 }
 
 func sortInterfaces(ifaces []InterfaceInfo) {
-	for i := 0; i < len(ifaces); i++ {
-		ip := net.ParseIP(ifaces[i].IP)
-		if ip != nil && IsPrivateIP(ip.To4()) {
-			// Swap to front
-			ifaces[0], ifaces[i] = ifaces[i], ifaces[0]
-			break
+	sort.SliceStable(ifaces, func(i, j int) bool {
+		ipI := net.ParseIP(ifaces[i].IP).To4()
+		ipJ := net.ParseIP(ifaces[j].IP).To4()
+
+		isPrivI := ipI != nil && IsPrivateIP(ipI)
+		isPrivJ := ipJ != nil && IsPrivateIP(ipJ)
+
+		if isPrivI != isPrivJ {
+			return isPrivI // private IPs come first
 		}
-	}
+
+		// Penalize virtual adapters
+		nameI := strings.ToLower(ifaces[i].Name)
+		nameJ := strings.ToLower(ifaces[j].Name)
+
+		isVirtI := strings.Contains(nameI, "vethernet") || strings.Contains(nameI, "docker") || strings.Contains(nameI, "br-") || strings.Contains(nameI, "vmware") || strings.Contains(nameI, "virtualbox")
+		isVirtJ := strings.Contains(nameJ, "vethernet") || strings.Contains(nameJ, "docker") || strings.Contains(nameJ, "br-") || strings.Contains(nameJ, "vmware") || strings.Contains(nameJ, "virtualbox")
+
+		if isVirtI != isVirtJ {
+			return !isVirtI // non-virtual adapters come first
+		}
+
+		return false // keep original stable order otherwise
+	})
 }
 
 // GetBroadcastAddr calculates the broadcast address for a given IPNet

@@ -1,10 +1,12 @@
 package discovery
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net"
 	"strings"
+	"sync"
 	"time"
 
 	"torrent-class/pkg/netutils"
@@ -15,12 +17,15 @@ const (
 	MagicPrefix   = "TORRENT_DIST:"
 )
 
-// Broadcaster sends the magnet link and local address over UDP broadcast
+// Broadcaster sends the magnet link and local address over UDP broadcast.
+// It maintains a persistent connection per local interface to avoid the overhead
+// of opening and closing a new socket on every tick.
 type Broadcaster struct {
 	MagnetLink string
 	ListenPort int
 	Interval   time.Duration
-	stop       chan struct{}
+	connsMu    sync.Mutex
+	conns      map[string]*net.UDPConn // local IP → cached UDP connection
 }
 
 func NewBroadcaster(magnetLink string, listenPort int) *Broadcaster {
@@ -28,17 +33,20 @@ func NewBroadcaster(magnetLink string, listenPort int) *Broadcaster {
 		MagnetLink: magnetLink,
 		ListenPort: listenPort,
 		Interval:   2 * time.Second,
-		stop:       make(chan struct{}),
+		conns:      make(map[string]*net.UDPConn),
 	}
 }
 
-func (b *Broadcaster) Start() error {
+// Start broadcasts until the context is cancelled. It closes all cached
+// connections on exit so the OS can reclaim the sockets immediately.
+func (b *Broadcaster) Start(ctx context.Context) error {
 	ticker := time.NewTicker(b.Interval)
 	defer ticker.Stop()
+	defer b.closeConns()
 
 	for {
 		select {
-		case <-b.stop:
+		case <-ctx.Done():
 			return nil
 		case <-ticker.C:
 			b.broadcast()
@@ -70,6 +78,41 @@ func (b *Broadcaster) broadcast() {
 	}
 }
 
+// getOrCreateConn returns a cached UDP connection bound to localIP, creating
+// one if it does not yet exist. Reusing connections avoids the kernel overhead
+// of a full socket open/close cycle on every broadcast tick (Issue #2).
+func (b *Broadcaster) getOrCreateConn(localIP string) (*net.UDPConn, error) {
+	b.connsMu.Lock()
+	defer b.connsMu.Unlock()
+
+	if conn, ok := b.conns[localIP]; ok {
+		return conn, nil
+	}
+
+	laddr, _ := net.ResolveUDPAddr("udp4", fmt.Sprintf("%s:0", localIP))
+	conn, err := net.ListenUDP("udp4", laddr)
+	if err != nil {
+		// Fallback: bind without a specific local address
+		conn, err = net.ListenUDP("udp4", nil)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create UDP conn for %s: %w", localIP, err)
+		}
+	}
+
+	b.conns[localIP] = conn
+	return conn, nil
+}
+
+// closeConns closes all cached UDP connections and resets the map.
+func (b *Broadcaster) closeConns() {
+	b.connsMu.Lock()
+	defer b.connsMu.Unlock()
+	for _, conn := range b.conns {
+		conn.Close()
+	}
+	b.conns = make(map[string]*net.UDPConn)
+}
+
 func (b *Broadcaster) sendBroadcastOnIP(ipnet *net.IPNet) {
 	// Create a message specifically for this interface
 	localIP := ipnet.IP.String()
@@ -83,19 +126,12 @@ func (b *Broadcaster) sendBroadcastOnIP(ipnet *net.IPNet) {
 		return
 	}
 
-	// We create a new connection for each broadcast to ensure it's sent from the right interface
-	// Bind to the local IP to force it out of that specific interface
-	laddr, _ := net.ResolveUDPAddr("udp4", fmt.Sprintf("%s:0", localIP))
-	conn, err := net.ListenUDP("udp4", laddr)
+	// Reuse the persistent connection bound to this interface (Issue #2)
+	conn, err := b.getOrCreateConn(localIP)
 	if err != nil {
-		// Fallback: try without binding
-		conn, err = net.ListenUDP("udp4", nil)
-		if err != nil {
-			log.Printf("UDP Discovery Error: Failed to listen: %v", err)
-			return
-		}
+		log.Printf("UDP Discovery Error: %v", err)
+		return
 	}
-	defer conn.Close()
 
 	_, _ = conn.WriteToUDP(message, addr)
 
@@ -104,28 +140,29 @@ func (b *Broadcaster) sendBroadcastOnIP(ipnet *net.IPNet) {
 	_, _ = conn.WriteToUDP(message, limAddr)
 }
 
-func (b *Broadcaster) Stop() {
-	close(b.stop)
-}
-
 type DiscoveryInfo struct {
 	Magnet string
 	IP     string
 	Port   int
 }
 
-// Listener listens for magnet links over UDP broadcast
+// Listener listens for magnet links over UDP broadcast.
+// The channel buffer is large enough to absorb simultaneous bursts
+// from a full classroom (Issue #4).
 type Listener struct {
 	Foundchan chan DiscoveryInfo
 }
 
 func NewListener() *Listener {
 	return &Listener{
-		Foundchan: make(chan DiscoveryInfo, 1),
+		Foundchan: make(chan DiscoveryInfo, 500),
 	}
 }
 
-func (l *Listener) Listen() error {
+// Listen blocks until either an error occurs or the context is cancelled.
+// Cancelling the context causes the blocking ReadFromUDP call to unblock
+// immediately, allowing the goroutine to exit cleanly (Issues #6, #10).
+func (l *Listener) Listen(ctx context.Context) error {
 	addr, err := net.ResolveUDPAddr("udp4", fmt.Sprintf(":%d", BroadcastPort))
 	if err != nil {
 		return err
@@ -137,10 +174,19 @@ func (l *Listener) Listen() error {
 	}
 	defer conn.Close()
 
+	// Closing the connection from this goroutine unblocks ReadFromUDP below.
+	go func() {
+		<-ctx.Done()
+		conn.Close()
+	}()
+
 	buf := make([]byte, 2048)
 	for {
 		n, _, err := conn.ReadFromUDP(buf)
 		if err != nil {
+			if ctx.Err() != nil {
+				return nil // context cancelled — clean exit
+			}
 			return err
 		}
 

@@ -2,6 +2,7 @@ package utils
 
 import (
 	"fmt"
+	"io"
 	"os"
 )
 
@@ -21,9 +22,21 @@ func HumanizeBytes(b int64) string {
 
 // CopyFile copies a file from src to dst
 func CopyFile(src, dst string) error {
-	data, err := os.ReadFile(src)
+	source, err := os.Open(src)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(dst, data, 0755)
+	defer source.Close()
+
+	destination, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer destination.Close()
+
+	_, err = io.Copy(destination, source)
+	if err != nil {
+		return err
+	}
+	return os.Chmod(dst, 0755)
 }

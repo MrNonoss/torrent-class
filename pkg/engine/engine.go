@@ -5,6 +5,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
+	"time"
 
 	"github.com/anacrolix/torrent"
 	"github.com/anacrolix/torrent/bencode"
@@ -49,6 +51,40 @@ func (e *Engine) CreateTorrentFromPath(path string) (*torrent.Torrent, []string,
 	return e.CreateTorrentFromPathWithProgress(path, nil)
 }
 
+// sequentialFileReader opens and reads files one by one to avoid hitting OS file descriptor limits
+type sequentialFileReader struct {
+	files        []string
+	currentIndex int
+	currentFile  *os.File
+}
+
+func (s *sequentialFileReader) Read(p []byte) (int, error) {
+	for {
+		if s.currentFile == nil {
+			if s.currentIndex >= len(s.files) {
+				return 0, io.EOF
+			}
+			var err error
+			s.currentFile, err = os.Open(s.files[s.currentIndex])
+			if err != nil {
+				return 0, err
+			}
+		}
+
+		n, err := s.currentFile.Read(p)
+		if n > 0 {
+			return n, nil
+		}
+		if err == io.EOF {
+			s.currentFile.Close()
+			s.currentFile = nil
+			s.currentIndex++
+			continue
+		}
+		return n, err
+	}
+}
+
 // ProgressReader wraps an io.Reader and reports progress
 type ProgressReader struct {
 	r          io.Reader
@@ -66,7 +102,7 @@ func (pr *ProgressReader) Read(p []byte) (n int, err error) {
 	return
 }
 
-// CreateTorrentFromPathWithProgress creates a torrent from a file or directory with hashing progress
+// CreateTorrentFromPathWithProgress creates a torrent from a file or directory with hashing progress.
 // It returns the torrent, a list of skipped files (due to permissions), and any fatal error.
 func (e *Engine) CreateTorrentFromPathWithProgress(path string, onProgress func(int64, int64)) (*torrent.Torrent, []string, error) {
 	absPath, err := filepath.Abs(path)
@@ -83,94 +119,112 @@ func (e *Engine) CreateTorrentFromPathWithProgress(path string, onProgress func(
 		return nil, skipped, fmt.Errorf("no accessible files found in %s", absPath)
 	}
 
-	pieceLength := calculatePieceLength(totalSize)
-
-	info := metainfo.Info{
-		PieceLength: pieceLength,
-		Name:        filepath.Base(absPath),
-	}
-
+	// Stat the target path up-front; needed both for cache validation and torrent building.
 	fi, err := os.Stat(absPath)
 	if err != nil {
 		return nil, skipped, err
 	}
 
-	if fi.IsDir() {
-		for _, f := range files {
-			rel, err := filepath.Rel(absPath, f)
-			if err != nil {
-				return nil, skipped, err
-			}
-			ffi, err := os.Stat(f)
-			if err != nil {
-				// This shouldn't happen as we just stat-ed it in calculateTotalSize,
-				// but handle it just in case.
-				if os.IsPermission(err) {
-					skipped = append(skipped, f)
-					continue
+	latestModTime, _ := getLatestModTime(files)
+	cacheFile := filepath.Join(filepath.Dir(absPath), "."+filepath.Base(absPath)+".torrent-class-cache")
+
+	var mi metainfo.MetaInfo
+	loadedFromCache := false
+
+	if cacheInfo, err := os.Stat(cacheFile); err == nil {
+		if !cacheInfo.ModTime().Before(latestModTime) {
+			f, err := os.Open(cacheFile)
+			if err == nil {
+				decodeErr := bencode.NewDecoder(f).Decode(&mi)
+				f.Close() // close immediately — don't hold the handle open during hashing (Issue #7)
+				if decodeErr == nil {
+					// Extra validation: verify file count and total size match so that
+					// deleted or renamed files (which don't bump any mtime) invalidate
+					// the cache correctly (Issue #9).
+					if cachedInfo, infoErr := mi.UnmarshalInfo(); infoErr == nil {
+						if cacheMatchesFiles(cachedInfo, fi.IsDir(), files, totalSize) {
+							loadedFromCache = true
+						}
+					}
 				}
-				return nil, skipped, err
 			}
-			info.Files = append(info.Files, metainfo.FileInfo{
-				Path:   filepath.SplitList(rel),
-				Length: ffi.Size(),
-			})
+		}
+	}
+
+	if !loadedFromCache {
+		pieceLength := calculatePieceLength(totalSize)
+
+		info := metainfo.Info{
+			PieceLength: pieceLength,
+			Name:        filepath.Base(absPath),
+		}
+
+		if fi.IsDir() {
+			for _, f := range files {
+				rel, err := filepath.Rel(absPath, f)
+				if err != nil {
+					return nil, skipped, err
+				}
+				ffi, err := os.Stat(f)
+				if err != nil {
+					// This shouldn't happen as we just stat-ed it in calculateTotalSize,
+					// but handle it just in case.
+					if os.IsPermission(err) {
+						skipped = append(skipped, f)
+						continue
+					}
+					return nil, skipped, err
+				}
+				// filepath.SplitList splits on the OS PATH separator (';' on Windows),
+				// not on path separators. The correct split is on '/' after normalising
+				// the relative path (Issue #8).
+				info.Files = append(info.Files, metainfo.FileInfo{
+					Path:   strings.Split(filepath.ToSlash(rel), "/"),
+					Length: ffi.Size(),
+				})
+			}
+		} else {
+			info.Length = totalSize
+		}
+
+		// Create a sequential reader to avoid opening all files at once
+		seqReader := &sequentialFileReader{
+			files: files,
+		}
+
+		progressReader := &ProgressReader{
+			r:          seqReader,
+			total:      totalSize,
+			onProgress: onProgress,
+		}
+
+		// Generate pieces
+		info.Pieces, err = metainfo.GeneratePieces(progressReader, info.PieceLength, nil)
+		if seqReader.currentFile != nil {
+			seqReader.currentFile.Close()
+		}
+		if err != nil {
+			return nil, skipped, fmt.Errorf("failed to generate pieces: %w", err)
+		}
+
+		infoBytes, err := bencode.Marshal(info)
+		if err != nil {
+			return nil, skipped, fmt.Errorf("failed to marshal info: %w", err)
+		}
+
+		mi = metainfo.MetaInfo{
+			InfoBytes: infoBytes,
+		}
+
+		if f, err := os.Create(cacheFile); err == nil {
+			bencode.NewEncoder(f).Encode(mi)
+			f.Close()
 		}
 	} else {
-		info.Length = totalSize
-	}
-
-	// Create a concatenated reader for all files
-	var readers []io.Reader
-	var finalFiles []string
-	for _, f := range files {
-		file, err := os.Open(f)
-		if err != nil {
-			if os.IsPermission(err) {
-				skipped = append(skipped, f)
-				continue
-			}
-			return nil, skipped, err
+		// Fast progress for UI if loaded from cache
+		if onProgress != nil {
+			onProgress(totalSize, totalSize)
 		}
-		defer file.Close()
-		readers = append(readers, file)
-		finalFiles = append(finalFiles, f)
-	}
-
-	if len(readers) == 0 {
-		return nil, skipped, fmt.Errorf("all files were inaccessible during hashing")
-	}
-
-	// Update files list in case some were skipped during opening
-	if len(finalFiles) != len(files) {
-		// If we are in single file mode and it failed, we already handled it.
-		// If we are in directory mode, we need to rebuild info.Files if pieces were already generated?
-		// Actually, we haven't generated pieces yet.
-		// But info.Files was already populated. This is getting complex.
-		// Let's simplify: if we can't open it now, we should have caught it in calculateTotalSize.
-		// We'll keep it for robustness.
-	}
-
-	multiReader := io.MultiReader(readers...)
-	progressReader := &ProgressReader{
-		r:          multiReader,
-		total:      totalSize,
-		onProgress: onProgress,
-	}
-
-	// Generate pieces
-	info.Pieces, err = metainfo.GeneratePieces(progressReader, info.PieceLength, nil)
-	if err != nil {
-		return nil, skipped, fmt.Errorf("failed to generate pieces: %w", err)
-	}
-
-	infoBytes, err := bencode.Marshal(info)
-	if err != nil {
-		return nil, skipped, fmt.Errorf("failed to marshal info: %w", err)
-	}
-
-	mi := metainfo.MetaInfo{
-		InfoBytes: infoBytes,
 	}
 
 	// Add to client
@@ -252,6 +306,24 @@ func (e *Engine) calculateTotalSize(path string) (int64, []string, []string, err
 	return totalSize, files, skipped, nil
 }
 
+// getLatestModTime finds the most recent modification time among a list of files
+func getLatestModTime(files []string) (time.Time, error) {
+	var latest time.Time
+	for _, f := range files {
+		info, err := os.Stat(f)
+		if err != nil {
+			if os.IsPermission(err) {
+				continue
+			}
+			return time.Time{}, err
+		}
+		if info.ModTime().After(latest) {
+			latest = info.ModTime()
+		}
+	}
+	return latest, nil
+}
+
 // calculatePieceLength returns an appropriate piece length based on the total size
 func calculatePieceLength(totalSize int64) int64 {
 	const (
@@ -282,4 +354,21 @@ func calculatePieceLength(totalSize int64) int64 {
 func (e *Engine) GetMagnetLink(t *torrent.Torrent) string {
 	mi := t.Metainfo()
 	return mi.Magnet(nil, nil).String()
+}
+
+// cacheMatchesFiles validates that a cached MetaInfo still matches the current
+// file set. Mtime-only checks miss deleted or renamed files; comparing file
+// count and total byte size catches those cases (Issue #9).
+func cacheMatchesFiles(info metainfo.Info, isDir bool, files []string, totalSize int64) bool {
+	if isDir {
+		if len(info.Files) != len(files) {
+			return false
+		}
+		var cachedTotal int64
+		for _, f := range info.Files {
+			cachedTotal += f.Length
+		}
+		return cachedTotal == totalSize
+	}
+	return info.Length == totalSize
 }

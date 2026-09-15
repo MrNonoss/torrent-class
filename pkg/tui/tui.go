@@ -60,9 +60,13 @@ type Model struct {
 	LastBytesWritten int64
 	DownSpeed        int64
 	UpSpeed          int64
+	DownSpeedEMA     float64
+	UpSpeedEMA       float64
+	LastTickTime     time.Time
 	SkippedFiles     []string                 // Track files skipped due to permission errors
 	Interfaces       []netutils.InterfaceInfo // Available network interfaces
-	FallbackCount    int                      // Countdown for HTTP fallback
+	FallbackDeadline time.Time                // Wall-clock deadline for the HTTP fallback timer (Issue #12)
+	DownloadStarted  bool                     // True if DownloadAll has been called
 }
 
 type TickMsg struct{}
@@ -114,15 +118,33 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			currentWrite := stats.BytesWrittenData.Int64()
 
 			// Calculate speed if we have previous values
-			if m.LastBytesRead > 0 {
-				m.DownSpeed = currentRead - m.LastBytesRead
-			}
-			if m.LastBytesWritten > 0 {
-				m.UpSpeed = currentWrite - m.LastBytesWritten
+			if m.LastBytesRead > 0 && !m.LastTickTime.IsZero() {
+				elapsed := time.Since(m.LastTickTime).Seconds()
+				if elapsed > 0 {
+					currentDownSpeed := float64(currentRead-m.LastBytesRead) / elapsed
+					currentUpSpeed := float64(currentWrite-m.LastBytesWritten) / elapsed
+
+					alpha := 0.2
+					if m.DownSpeedEMA == 0 {
+						m.DownSpeedEMA = currentDownSpeed
+					} else {
+						m.DownSpeedEMA = m.DownSpeedEMA + alpha*(currentDownSpeed-m.DownSpeedEMA)
+					}
+
+					if m.UpSpeedEMA == 0 {
+						m.UpSpeedEMA = currentUpSpeed
+					} else {
+						m.UpSpeedEMA = m.UpSpeedEMA + alpha*(currentUpSpeed-m.UpSpeedEMA)
+					}
+
+					m.DownSpeed = int64(m.DownSpeedEMA)
+					m.UpSpeed = int64(m.UpSpeedEMA)
+				}
 			}
 
 			m.LastBytesRead = currentRead
 			m.LastBytesWritten = currentWrite
+			m.LastTickTime = time.Now()
 
 			if m.Torrent.Info() != nil {
 				prog := float64(m.Torrent.BytesCompleted()) / float64(m.Torrent.Length())
@@ -130,11 +152,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.IsComplete = true
 				}
 				// Safely start/resume download once info is available
-				m.Torrent.DownloadAll()
-			}
-		} else if m.Mode == "download" && !m.Quitting {
-			if m.FallbackCount > 0 {
-				m.FallbackCount--
+				if !m.DownloadStarted && m.Mode == "download" {
+					m.Torrent.DownloadAll()
+					// Prioritise the first ~5% of pieces with PiecePriorityNow so that
+					// downloading peers can begin re-seeding to the mesh as fast as
+					// possible, breaking the single-seeder bottleneck sooner (Issue #1).
+					numPieces := m.Torrent.NumPieces()
+					earlyCount := numPieces / 20 // 5%
+					if earlyCount < 5 {
+						earlyCount = 5
+					}
+					for i := 0; i < earlyCount && i < numPieces; i++ {
+						m.Torrent.Piece(i).SetPriority(torrent.PiecePriorityNow)
+					}
+					m.DownloadStarted = true
+				} else if !m.DownloadStarted && m.Mode == "seed" {
+					// Seeders also mark DownloadStarted to prevent re-entry
+					m.DownloadStarted = true
+				}
 			}
 		}
 		return m, Tick()
@@ -201,13 +236,16 @@ func (m Model) View() string {
 		if m.IsComplete {
 			s.WriteString(successStyle.Render("✓ COMPLETE"))
 		} else if m.Torrent == nil {
-			s.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#FACC15")).Render("WAITING FOR MAGNET..."))
-			s.WriteString("\n")
-			if m.FallbackCount > 0 {
-				s.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#FACC15")).Render(fmt.Sprintf("  %d seconds before HTTP fallback", m.FallbackCount)))
-			} else {
-				s.WriteString(lipgloss.NewStyle().Italic(true).Foreground(lipgloss.Color("#64748B")).Render("  Tip: If this takes too long, check the Instructor's IP."))
-			}
+				s.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#FACC15")).Render("WAITING FOR MAGNET..."))
+				s.WriteString("\n")
+				if !m.FallbackDeadline.IsZero() {
+					remaining := int(time.Until(m.FallbackDeadline).Seconds())
+					if remaining > 0 {
+						s.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#FACC15")).Render(fmt.Sprintf("  %d seconds before HTTP fallback", remaining)))
+					} else {
+						s.WriteString(lipgloss.NewStyle().Italic(true).Foreground(lipgloss.Color("#64748B")).Render("  Tip: If this takes too long, check the Instructor's IP."))
+					}
+				}
 		} else {
 			s.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("#FACC15")).Render("DOWNLOADING"))
 		}

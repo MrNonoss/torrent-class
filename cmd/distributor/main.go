@@ -1,24 +1,25 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"log"
-	"net"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"strings"
+	"sync"
 	"time"
 
 	"torrent-class/pkg/discovery"
 	"torrent-class/pkg/engine"
+	"torrent-class/pkg/httpserver"
 	"torrent-class/pkg/netutils"
 	"torrent-class/pkg/tui"
-	torrent_utils "torrent-class/pkg/utils"
+	"torrent-class/pkg/wizard"
 
 	"github.com/anacrolix/torrent"
 	"github.com/charmbracelet/bubbles/progress"
@@ -26,6 +27,16 @@ import (
 	"github.com/mattn/go-isatty"
 	"github.com/ncruces/zenity"
 )
+
+// peerTTL is how long a peer stays in the seen-cache before it can be re-added.
+// 10 minutes is long enough to suppress spurious re-adds within a session while
+// still allowing a peer that reconnected after a drop to rejoin the mesh (Issue #3).
+const peerTTL = 10 * time.Minute
+
+// seenPeer records the last time we added a peer to the torrent.
+type seenPeer struct {
+	addedAt time.Time
+}
 
 func main() {
 	var mode, path, ipOverride, seederIP string
@@ -54,124 +65,13 @@ func main() {
 
 	flag.Parse()
 
-	// If no flags are provided, enter interactive mode via GUI dialogs
 	if flag.NFlag() == 0 {
-		selectedMode, err := zenity.List(
-			"Select operation mode:",
-			[]string{"Download (Receive files)", "Seed (Share a file/folder)"},
-			zenity.Title("Torrent Class"),
-			zenity.DefaultItems("Download (Receive files)"),
-		)
+		var err error
+		mode, path, ipOverride, seederIP, err = wizard.RunInteractiveSetup()
 		if err != nil {
-			if err == zenity.ErrCanceled {
-				os.Exit(0)
-			}
-			log.Fatalf("Error selecting mode: %v", err)
-		}
-
-		if selectedMode == "Seed (Share a file/folder)" {
-			mode = "seed"
-			// Use buttons: Folder (OK), File (Extra), Abort (Cancel/Close)
-			err := zenity.Question("What would you like to share?",
-				zenity.Title("Torrent Class - Seeding"),
-				zenity.OKLabel("          Folder          "),
-				zenity.ExtraButton("          File          "),
-				zenity.CancelLabel("          Abort          "),
-			)
-
-			if err == nil { // "Folder" clicked
-				res, err := zenity.SelectFile(
-					zenity.Title("Select folder to seed"),
-					zenity.Directory(),
-				)
-				if err != nil {
-					if err == zenity.ErrCanceled {
-						os.Exit(0)
-					}
-					log.Fatalf("Error selecting folder: %v", err)
-				}
-				path = res
-			} else if err == zenity.ErrExtraButton { // "File" clicked
-				res, err := zenity.SelectFile(
-					zenity.Title("Select file to seed"),
-				)
-				if err != nil {
-					if err == zenity.ErrCanceled {
-						os.Exit(0)
-					}
-					log.Fatalf("Error selecting file: %v", err)
-				}
-				path = res
-			} else {
-				// "Abort" clicked or window closed
-				os.Exit(0)
-			}
-		} else {
-			// Download config
-			err := zenity.Question("Where would you like to save the files?",
-				zenity.Title("Torrent Class - Download"),
-				zenity.OKLabel("          Choose Folder          "),
-				zenity.CancelLabel("          Current Directory          "),
-			)
-			if err == nil {
-				res, err := zenity.SelectFile(zenity.Title("Select destination folder"), zenity.Directory())
-				if err == nil {
-					path = res
-				}
-			}
-
-			// Discovery config
-			discoveryMode, err := zenity.List(
-				"Choose discovery mode:",
-				[]string{"Automatic (UDP Discovery)", "Manual (Enter Seeder IP)"},
-				zenity.Title("Torrent Class - Connectivity"),
-				zenity.DefaultItems("Automatic (UDP Discovery)"),
-			)
-			if err == nil && discoveryMode == "Manual (Enter Seeder IP)" {
-				for {
-					res, err := zenity.Entry("Enter the Instructor/Seeder IP address:",
-						zenity.Title("Manual Connection"),
-						zenity.EntryText("192.168.x.x"),
-						zenity.Width(400),
-					)
-					if err != nil { // Canceled
-						break
-					}
-					if isValidIPv4(res) {
-						seederIP = res
-						break
-					}
-					zenity.Error("Invalid IPv4 address. Please enter a valid address (e.g. 192.168.1.10) without port.", zenity.Title("Invalid Input"))
-				}
-			}
-		}
-
-		// Network Interface Selection (Interactive Mode Only)
-		if ipOverride == "" {
-			ifaces, _ := netutils.GetValidInterfaces()
-			if len(ifaces) > 1 {
-				var options []string
-				for _, iface := range ifaces {
-					options = append(options, fmt.Sprintf("%-15s (%s)", iface.IP, iface.Name))
-				}
-
-				selected, err := zenity.List(
-					"Multiple network adapters found. Select one to use:",
-					options,
-					zenity.Title("Torrent Class - Network Adapter"),
-					zenity.DefaultItems(options[0]),
-				)
-				if err == nil {
-					// Extract IP from "192.168.1.10 (eth0)"
-					parts := strings.Fields(selected)
-					if len(parts) > 0 {
-						ipOverride = parts[0]
-					}
-				}
-			}
+			log.Fatalf("Setup error: %v", err)
 		}
 	} else {
-		// CLI Validation: If mode is seed, path must be provided (not default ".")
 		pathWasSet := false
 		flag.Visit(func(f *flag.Flag) {
 			if f.Name == "path" || f.Name == "p" {
@@ -186,18 +86,12 @@ func main() {
 		}
 	}
 
-	// Handle the case where both long and short flags might be provided (last one wins)
-	// We use StringVar with pointers so they already overwritten each other if both set in a specific order,
-	// but standard 'flag' package doesn't handle aliases perfectly out of the box.
-	// We'll trust the user or the last value.
-
-	// TTY Check and Relaunch for Linux (Moved after parameter collection)
 	if runtime.GOOS == "linux" && os.Getenv("TORRENT_CLASS_RELAUNCHED") == "" {
 		if !isatty.IsTerminal(os.Stdin.Fd()) && !isatty.IsCygwinTerminal(os.Stdin.Fd()) {
 			term := findTerminal()
 			if term != "" {
 				relaunchInTerminal(term, mode, path, ipOverride, seederIP, port, httpPort, maxConns)
-				return // Exit original process
+				return
 			}
 		}
 	}
@@ -207,7 +101,6 @@ func main() {
 		log.Fatalf("Invalid path: %v", err)
 	}
 
-	// Determine storage directory: for seeding, use the parent so the torrent name matches the folder/file
 	storageDir := dataDir
 	if mode == "seed" {
 		storageDir = filepath.Dir(dataDir)
@@ -219,7 +112,6 @@ func main() {
 	}
 	defer eng.Close()
 
-	// Get local IP and all valid interfaces
 	interfaces, _ := netutils.GetValidInterfaces()
 	localIP := ipOverride
 	if localIP == "" {
@@ -227,73 +119,50 @@ func main() {
 	}
 
 	var t *torrent.Torrent
+
+	// actualMagnet is written by the background goroutine and read by the HTTP
+	// server goroutine and the discovery listener goroutines — protect it with a
+	// mutex to eliminate the data race (Issue #5).
+	var magnetMu sync.RWMutex
 	var actualMagnet string
-
-	// Initialize TUI Model
-	var httpAddr string
-	if mode == "seed" {
-		httpAddr = fmt.Sprintf("http://%s:%d", localIP, httpPort)
-
-		// Start HTTP server immediately for binary distribution and metadata discovery
-		exePath, _ := os.Executable()
-		exeDir := filepath.Dir(exePath)
-		exeName := filepath.Base(exePath)
-
-		// Create shareable folder with date
-		dateStr := time.Now().Format("2006-01-02")
-		shareDirName := fmt.Sprintf("shareable_%s", dateStr)
-		sharePath := filepath.Join(exeDir, shareDirName)
-
-		// Ensure directory exists
-		os.MkdirAll(sharePath, 0755)
-
-		// Copy binary into shareable folder
-		newExePath := filepath.Join(sharePath, exeName)
-		if err := torrent_utils.CopyFile(exePath, newExePath); err != nil {
-			log.Printf("Failed to copy binary to shareable folder: %v", err)
-		}
-
-		mux := http.NewServeMux()
-		mux.Handle("/", http.FileServer(http.Dir(sharePath)))
-
-		// Add /info endpoint for HTTP discovery
-		mux.HandleFunc("/info", func(w http.ResponseWriter, r *http.Request) {
-			if actualMagnet == "" {
-				http.Error(w, "Torrent not ready", http.StatusServiceUnavailable)
-				return
-			}
-			info := discovery.DiscoveryInfo{
-				Magnet: actualMagnet,
-				IP:     localIP,
-				Port:   port,
-			}
-			w.Header().Set("Content-Type", "application/json")
-			json.NewEncoder(w).Encode(info)
-		})
-
-		go func() {
-			addr := fmt.Sprintf(":%d", httpPort)
-			if err := http.ListenAndServe(addr, mux); err != nil {
-				log.Printf("HTTP server error: %v", err)
-			}
-		}()
+	getMagnet := func() string {
+		magnetMu.RLock()
+		defer magnetMu.RUnlock()
+		return actualMagnet
+	}
+	setMagnet := func(m string) {
+		magnetMu.Lock()
+		defer magnetMu.Unlock()
+		actualMagnet = m
 	}
 
+	// Root context: cancelled when the TUI exits, which cascades to all
+	// background goroutines (Broadcaster, Listener) for clean shutdown (Issues #6, #10).
+	ctx, cancel := context.WithCancel(context.Background())
+
+	var httpAddr string
+	if mode == "seed" {
+		httpAddr = httpserver.StartShareableServer(localIP, httpPort, port, getMagnet)
+	}
+
+	// fallbackDeadline is computed once so the UI countdown and the actual
+	// time.After in the goroutine share exactly the same deadline (Issue #12).
+	fallbackDeadline := time.Now().Add(25 * time.Second)
+
 	m := tui.Model{
-		Mode:          mode,
-		IP:            localIP,
-		Port:          port,
-		Magnet:        actualMagnet,
-		HTTPAddr:      httpAddr,
-		IsHashing:     mode == "seed",
-		Progress:      progress.New(progress.WithDefaultGradient()),
-		Interfaces:    interfaces,
-		FallbackCount: 25,
+		Mode:             mode,
+		IP:               localIP,
+		Port:             port,
+		Magnet:           actualMagnet,
+		HTTPAddr:         httpAddr,
+		IsHashing:        mode == "seed",
+		Progress:         progress.New(progress.WithDefaultGradient()),
+		Interfaces:       interfaces,
+		FallbackDeadline: fallbackDeadline,
 	}
 
 	p := tea.NewProgram(m)
 
-	// Seeding/Downloading Logic in Background
 	go func() {
 		if mode == "seed" {
 			var skipped []string
@@ -311,48 +180,86 @@ func main() {
 				p.Send(tui.SkippedFilesMsg(skipped))
 			}
 
-			// Wait for info to be available
 			<-t.GotInfo()
 
 			magnetLink := eng.GetMagnetLink(t)
-			actualMagnet = magnetLink
+			setMagnet(magnetLink)
 			p.Send(tui.TorrentLoadedMsg{
 				Torrent: t,
 				Magnet:  magnetLink,
 			})
 
-			// Start broadcasting
+			// Continuously listen for new peers to ensure full mesh.
+			listener := discovery.NewListener()
+			go listener.Listen(ctx)
+			go func() {
+				seen := make(map[string]seenPeer)
+				for {
+					select {
+					case info, ok := <-listener.Foundchan:
+						if !ok {
+							return
+						}
+						if info.Magnet == getMagnet() {
+							peerKey := fmt.Sprintf("%s:%d", info.IP, info.Port)
+							now := time.Now()
+							if entry, exists := seen[peerKey]; !exists || now.Sub(entry.addedAt) >= peerTTL {
+								seen[peerKey] = seenPeer{addedAt: now}
+								eng.AddPeer(t, info.IP, info.Port)
+							}
+							// Evict expired entries to bound map size (Issue #3)
+							if len(seen) > 200 {
+								for k, v := range seen {
+									if now.Sub(v.addedAt) >= peerTTL {
+										delete(seen, k)
+									}
+								}
+							}
+						}
+					case <-ctx.Done():
+						return
+					}
+				}
+			}()
+
 			broadcaster := discovery.NewBroadcaster(magnetLink, port)
-			go broadcaster.Start()
+			go broadcaster.Start(ctx)
 		} else if mode == "download" {
 			foundInfo := make(chan discovery.DiscoveryInfo, 1)
 
-			// 1. If seeder IP provided, try HTTP immediately
 			if seederIP != "" {
 				go func() {
 					info, err := fetchDiscoveryInfo(seederIP, httpPort)
 					if err == nil {
-						foundInfo <- info
+						select {
+						case foundInfo <- info:
+						default:
+						}
 					}
 				}()
 			}
 
-			// 2. Start UDP Discovery
 			listener := discovery.NewListener()
-			go listener.Listen()
+			go listener.Listen(ctx)
+			// Forward the first UDP announcement to foundInfo.
+			// The ctx.Done() arm prevents this goroutine from leaking when
+			// foundInfo is already resolved via the HTTP path (Issue #6).
 			go func() {
-				info := <-listener.Foundchan
-				foundInfo <- info
+				select {
+				case info := <-listener.Foundchan:
+					select {
+					case foundInfo <- info:
+					default:
+					}
+				case <-ctx.Done():
+				}
 			}()
 
-			// 3. Fallback logic: Wait for first discovery (UDP, Manual, or 25s Timeout)
 			var info discovery.DiscoveryInfo
 			select {
 			case info = <-foundInfo:
-				// Successfully found via UDP or manual initial IP
-			case <-time.After(25 * time.Second):
-				if actualMagnet == "" {
-					// Trigger popup if still waiting
+			case <-time.After(time.Until(fallbackDeadline)):
+				if getMagnet() == "" {
 					for {
 						res, err := zenity.Entry("Type in the instructor's IP address:",
 							zenity.Title("Torrent Class - Connection Timeout"),
@@ -362,7 +269,7 @@ func main() {
 						if err != nil {
 							break
 						}
-						if isValidIPv4(res) {
+						if wizard.IsValidIPv4(res) {
 							info, err = fetchDiscoveryInfo(res, httpPort)
 							if err != nil {
 								log.Printf("Manual HTTP discovery failed: %v", err)
@@ -377,8 +284,8 @@ func main() {
 			}
 
 			if info.Magnet != "" {
-				actualMagnet = info.Magnet
-				t, err = eng.AddTorrentByMagnet(actualMagnet)
+				setMagnet(info.Magnet)
+				t, err = eng.AddTorrentByMagnet(getMagnet())
 				if err != nil {
 					log.Printf("Failed to add magnet: %v", err)
 					return
@@ -387,34 +294,97 @@ func main() {
 
 				p.Send(tui.TorrentLoadedMsg{
 					Torrent: t,
-					Magnet:  actualMagnet,
+					Magnet:  getMagnet(),
 				})
 
-				// Viral Seeding
-				broadcaster := discovery.NewBroadcaster(actualMagnet, port)
-				go broadcaster.Start()
-			} else if actualMagnet != "" {
-				// We already have a magnet (e.g. from CLI flag)
-				t, err = eng.AddTorrentByMagnet(actualMagnet)
+				broadcaster := discovery.NewBroadcaster(getMagnet(), port)
+				go broadcaster.Start(ctx)
+
+				// Continuously listen for new peers to ensure full mesh.
+				go func() {
+					seen := make(map[string]seenPeer)
+					seen[fmt.Sprintf("%s:%d", info.IP, info.Port)] = seenPeer{addedAt: time.Now()}
+
+					for {
+						select {
+						case newInfo, ok := <-listener.Foundchan:
+							if !ok {
+								return
+							}
+							if newInfo.Magnet == getMagnet() {
+								peerKey := fmt.Sprintf("%s:%d", newInfo.IP, newInfo.Port)
+								now := time.Now()
+								if entry, exists := seen[peerKey]; !exists || now.Sub(entry.addedAt) >= peerTTL {
+									seen[peerKey] = seenPeer{addedAt: now}
+									eng.AddPeer(t, newInfo.IP, newInfo.Port)
+								}
+								// Evict expired entries to bound map size (Issue #3)
+								if len(seen) > 200 {
+									for k, v := range seen {
+										if now.Sub(v.addedAt) >= peerTTL {
+											delete(seen, k)
+										}
+									}
+								}
+							}
+						case <-ctx.Done():
+							return
+						}
+					}
+				}()
+			} else if getMagnet() != "" {
+				t, err = eng.AddTorrentByMagnet(getMagnet())
 				if err != nil {
 					log.Printf("Failed to add magnet: %v", err)
 					return
 				}
 				p.Send(tui.TorrentLoadedMsg{
 					Torrent: t,
-					Magnet:  actualMagnet,
+					Magnet:  getMagnet(),
 				})
-				broadcaster := discovery.NewBroadcaster(actualMagnet, port)
-				go broadcaster.Start()
+				broadcaster := discovery.NewBroadcaster(getMagnet(), port)
+				go broadcaster.Start(ctx)
+
+				// Continuously listen for new peers to ensure full mesh.
+				go func() {
+					seen := make(map[string]seenPeer)
+					for {
+						select {
+						case newInfo, ok := <-listener.Foundchan:
+							if !ok {
+								return
+							}
+							if newInfo.Magnet == getMagnet() {
+								peerKey := fmt.Sprintf("%s:%d", newInfo.IP, newInfo.Port)
+								now := time.Now()
+								if entry, exists := seen[peerKey]; !exists || now.Sub(entry.addedAt) >= peerTTL {
+									seen[peerKey] = seenPeer{addedAt: now}
+									eng.AddPeer(t, newInfo.IP, newInfo.Port)
+								}
+								// Evict expired entries to bound map size (Issue #3)
+								if len(seen) > 200 {
+									for k, v := range seen {
+										if now.Sub(v.addedAt) >= peerTTL {
+											delete(seen, k)
+										}
+									}
+								}
+							}
+						case <-ctx.Done():
+							return
+						}
+					}
+				}()
 			}
 		}
 	}()
 
 	if _, err := p.Run(); err != nil {
+		cancel()
 		log.Fatalf("TUI Error: %v", err)
 	}
+	cancel() // Signal all background goroutines to exit cleanly (Issues #6, #10)
 
-	// Keep terminal open if we relaunched
 	if os.Getenv("TORRENT_CLASS_RELAUNCHED") == "1" {
 		fmt.Println("\nPress Enter to exit...")
 		var b [1]byte
@@ -450,12 +420,9 @@ func relaunchInTerminal(terminalPath string, mode, path, ip, seederIP string, po
 		exe = os.Args[0]
 	}
 
-	// Build relaunch command with collected parameters
 	os.Setenv("TORRENT_CLASS_RELAUNCHED", "1")
-
 	base := filepath.Base(terminalPath)
 
-	// Collect arguments to pass to the new process
 	args := []string{
 		"--mode", mode,
 		"--path", path,
@@ -482,7 +449,6 @@ func relaunchInTerminal(terminalPath string, mode, path, ip, seederIP string, po
 		cmdArgs = append(cmdArgs, "-x", exe)
 		cmdArgs = append(cmdArgs, args...)
 	default:
-		// Most others support -e command [args]
 		cmdArgs = append(cmdArgs, "-e", exe)
 		cmdArgs = append(cmdArgs, args...)
 	}
@@ -510,14 +476,4 @@ func fetchDiscoveryInfo(ip string, port int) (discovery.DiscoveryInfo, error) {
 		return discovery.DiscoveryInfo{}, err
 	}
 	return info, nil
-}
-
-func isValidIPv4(ip string) bool {
-	parsedIP := net.ParseIP(ip)
-	if parsedIP == nil {
-		return false
-	}
-	// To4 returns non-nil only for IPv4.
-	// Also ensure no colons (IPv6 or port)
-	return parsedIP.To4() != nil && !strings.Contains(ip, ":")
 }
