@@ -3,7 +3,6 @@
 
 # Binaries
 releases/*
-!releases/.gitkeep
 
 # Project logs/meta
 CHANGELOG.md
