@@ -1,47 +1,25 @@
-# Building Torrent Class
+# Building from Source
 
-This guide is for developers who want to build the tool from source or cross-compile it for different platforms.
+Requires **Go 1.25.6** or newer.
 
-## Prerequisites
+## Local Build
 
-- Go 1.25.6 or higher.
-
-## Installation
-
-1. Clone the repository:
-   ```bash
-   git clone <repository-url>
-   cd torrent-class
-   ```
-
-2. Install dependencies:
-   ```bash
-   go mod download
-   ```
-
-## Compilation
-
-To build for your current platform:
+Build a binary for your current OS and architecture:
 
 ```bash
 go build -o torrent-class ./cmd/distributor
 ```
 
-## Build Automation (Cross-Compilation)
+## Cross-Compile Release Binaries
 
-To cross-compile binaries for the main supported platforms (Windows, Linux, macOS):
+Build binaries for Windows (`amd64`), Linux (`amd64`), and macOS (`amd64` and `arm64`) into the `releases/` folder:
 
 ```bash
 go run scripts/build.go
 ```
 
-The compiled binaries will be saved in the `releases/` folder.
+## Tests
 
-## Dependencies
-
-- `github.com/anacrolix/torrent`: Core P2P engine.
-- `github.com/charmbracelet/bubbletea`: TUI framework.
-- `github.com/charmbracelet/bubbles`: TUI component library (Progress Bar).
-- `github.com/charmbracelet/lipgloss`: Terminal layout and styling.
-- `github.com/ncruces/zenity`: Native GUI dialogs.
-- `github.com/mattn/go-isatty`: Terminal capability detection.
+```bash
+go test ./...
+```

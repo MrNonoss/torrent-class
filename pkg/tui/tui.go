@@ -117,8 +117,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			currentRead := stats.BytesReadUsefulData.Int64()
 			currentWrite := stats.BytesWrittenData.Int64()
 
-			// Calculate speed if we have previous values
-			if m.LastBytesRead > 0 && !m.LastTickTime.IsZero() {
+			// Calculate speed if we have a previous sample (LastTickTime set).
+			// Don't gate on LastBytesRead: seeders never download, so it stays 0.
+			if !m.LastTickTime.IsZero() {
 				elapsed := time.Since(m.LastTickTime).Seconds()
 				if elapsed > 0 {
 					currentDownSpeed := float64(currentRead-m.LastBytesRead) / elapsed

@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0F172A"/>
+      <stop offset="60%" stop-color="#131127"/>
+      <stop offset="100%" stop-color="#1E1B4B"/>
+    </linearGradient>
+    <linearGradient id="masterGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#F43F5E"/>
+      <stop offset="100%" stop-color="#5A3BD1"/>
+    </linearGradient>
+    <linearGradient id="arrowGrad" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#10B981"/>
+      <stop offset="100%" stop-color="#38BDF8"/>
+    </linearGradient>
+  </defs>
+
+  <!-- Minimal Dark Slate Squircle Background -->
+  <rect x="16" y="16" width="480" height="480" rx="108" fill="url(#bgGrad)" stroke="#5A3BD1" stroke-width="8" stroke-opacity="0.6"/>
+
+  <!-- Subtle Horizontal Peer-to-Peer Link Between the 3 Peers -->
+  <line x1="120" y1="392" x2="392" y2="392" stroke="#38BDF8" stroke-width="6" stroke-dasharray="12 10" stroke-linecap="round" opacity="0.45"/>
+
+  <!-- 3 Bold Directional Arrows from Master to Peers -->
+  <!-- Left Arrow -->
+  <g stroke="url(#arrowGrad)" stroke-width="14" stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <line x1="210" y1="224" x2="140" y2="324"/>
+    <polyline points="134,292 138,327 172,318"/>
+  </g>
+  <!-- Center Arrow -->
+  <g stroke="url(#arrowGrad)" stroke-width="14" stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <line x1="256" y1="232" x2="256" y2="328"/>
+    <polyline points="234,306 256,332 278,306"/>
+  </g>
+  <!-- Right Arrow -->
+  <g stroke="url(#arrowGrad)" stroke-width="14" stroke-linecap="round" stroke-linejoin="round" fill="none">
+    <line x1="302" y1="224" x2="372" y2="324"/>
+    <polyline points="340,318 374,327 378,292"/>
+  </g>
+
+  <!-- ONE Master Piece (Top Center Rounded Block) -->
+  <rect x="184" y="68" width="144" height="144" rx="34" fill="url(#masterGrad)" stroke="#FFFFFF" stroke-width="5" stroke-opacity="0.25"/>
+  <!-- Inner Core Dot on Master -->
+  <circle cx="256" cy="140" r="24" fill="#FFFFFF" opacity="0.9"/>
+
+  <!-- THREE Smaller Peer Nodes (Bottom Row) -->
+  <!-- Peer 1 (Left - Cyan) -->
+  <circle cx="120" cy="392" r="40" fill="#38BDF8"/>
+  <circle cx="120" cy="392" r="14" fill="#0F172A"/>
+
+  <!-- Peer 2 (Center - Emerald) -->
+  <circle cx="256" cy="392" r="40" fill="#10B981"/>
+  <circle cx="256" cy="392" r="14" fill="#0F172A"/>
+
+  <!-- Peer 3 (Right - Cyan) -->
+  <circle cx="392" cy="392" r="40" fill="#38BDF8"/>
+  <circle cx="392" cy="392" r="14" fill="#0F172A"/>
+</svg>

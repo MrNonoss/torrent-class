@@ -19,6 +19,7 @@ import (
 	"torrent-class/pkg/httpserver"
 	"torrent-class/pkg/netutils"
 	"torrent-class/pkg/tui"
+	"torrent-class/pkg/winmgr"
 	"torrent-class/pkg/wizard"
 
 	"github.com/anacrolix/torrent"
@@ -65,7 +66,18 @@ func main() {
 
 	flag.Parse()
 
+	if runtime.GOOS == "linux" && os.Getenv("TORRENT_CLASS_RELAUNCHED") == "" {
+		if !isatty.IsTerminal(os.Stdin.Fd()) && !isatty.IsCygwinTerminal(os.Stdin.Fd()) {
+			term := findTerminal()
+			if term != "" {
+				relaunchInTerminal(term, os.Args[1:])
+				return
+			}
+		}
+	}
+
 	if flag.NFlag() == 0 {
+		winmgr.PrepareTerminal()
 		var err error
 		mode, path, ipOverride, seederIP, err = wizard.RunInteractiveSetup()
 		if err != nil {
@@ -83,16 +95,6 @@ func main() {
 			fmt.Println("Error: You must specify a path to the file or folder you want to seed.")
 			fmt.Println("Usage: torrent-class -m seed -p <path>")
 			os.Exit(1)
-		}
-	}
-
-	if runtime.GOOS == "linux" && os.Getenv("TORRENT_CLASS_RELAUNCHED") == "" {
-		if !isatty.IsTerminal(os.Stdin.Fd()) && !isatty.IsCygwinTerminal(os.Stdin.Fd()) {
-			term := findTerminal()
-			if term != "" {
-				relaunchInTerminal(term, mode, path, ipOverride, seederIP, port, httpPort, maxConns)
-				return
-			}
 		}
 	}
 
@@ -260,11 +262,16 @@ func main() {
 			case info = <-foundInfo:
 			case <-time.After(time.Until(fallbackDeadline)):
 				if getMagnet() == "" {
+					dlgCtx, dlgCancel := context.WithCancel(ctx)
+					winmgr.StartDialogPromoter(dlgCtx)
+					dlgOpts := winmgr.DialogOptions()
 					for {
 						res, err := zenity.Entry("Type in the instructor's IP address:",
-							zenity.Title("Torrent Class - Connection Timeout"),
-							zenity.EntryText("192.168.x.x"),
-							zenity.Width(400),
+							append([]zenity.Option{
+								zenity.Title("Torrent Class - Connection Timeout"),
+								zenity.EntryText("192.168.x.x"),
+								zenity.Width(400),
+							}, dlgOpts...)...,
 						)
 						if err != nil {
 							break
@@ -273,13 +280,16 @@ func main() {
 							info, err = fetchDiscoveryInfo(res, httpPort)
 							if err != nil {
 								log.Printf("Manual HTTP discovery failed: %v", err)
-								zenity.Error(fmt.Sprintf("Failed to connect to seeder at %s: %v", res, err), zenity.Title("Connection Error"))
+								zenity.Error(fmt.Sprintf("Failed to connect to seeder at %s: %v", res, err),
+									append([]zenity.Option{zenity.Title("Connection Error")}, dlgOpts...)...)
 								continue
 							}
 							break
 						}
-						zenity.Error("Invalid IPv4 address. Please enter a valid address (e.g. 192.168.1.10) without port.", zenity.Title("Invalid Input"))
+						zenity.Error("Invalid IPv4 address. Please enter a valid address (e.g. 192.168.1.10) without port.",
+							append([]zenity.Option{zenity.Title("Invalid Input")}, dlgOpts...)...)
 					}
+					dlgCancel()
 				}
 			}
 
@@ -414,7 +424,7 @@ func findTerminal() string {
 	return ""
 }
 
-func relaunchInTerminal(terminalPath string, mode, path, ip, seederIP string, port, httpPort, maxConns int) {
+func relaunchInTerminal(terminalPath string, args []string) {
 	exe, err := os.Executable()
 	if err != nil {
 		exe = os.Args[0]
@@ -422,20 +432,6 @@ func relaunchInTerminal(terminalPath string, mode, path, ip, seederIP string, po
 
 	os.Setenv("TORRENT_CLASS_RELAUNCHED", "1")
 	base := filepath.Base(terminalPath)
-
-	args := []string{
-		"--mode", mode,
-		"--path", path,
-		"--bit-port", fmt.Sprintf("%d", port),
-		"--http-port", fmt.Sprintf("%d", httpPort),
-		"--max-conns", fmt.Sprintf("%d", maxConns),
-	}
-	if ip != "" {
-		args = append(args, "--ip", ip)
-	}
-	if seederIP != "" {
-		args = append(args, "--seeder", seederIP)
-	}
 
 	var cmdArgs []string
 	switch base {

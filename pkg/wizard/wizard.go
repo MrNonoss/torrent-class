@@ -1,6 +1,7 @@
 package wizard
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"net"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/ncruces/zenity"
 	"torrent-class/pkg/netutils"
+	"torrent-class/pkg/winmgr"
 )
 
 func IsValidIPv4(ip string) bool {
@@ -19,14 +21,24 @@ func IsValidIPv4(ip string) bool {
 	return parsedIP.To4() != nil && !strings.Contains(ip, ":")
 }
 
+func withDialogOpts(opts ...zenity.Option) []zenity.Option {
+	return append(opts, winmgr.DialogOptions()...)
+}
+
 func RunInteractiveSetup() (mode, path, ipOverride, seederIP string, err error) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	winmgr.StartDialogPromoter(ctx)
+
 	mode = "download"
 
 	selectedMode, err := zenity.List(
 		"Select operation mode:",
 		[]string{"Download (Receive files)", "Seed (Share a file/folder)"},
-		zenity.Title("Torrent Class"),
-		zenity.DefaultItems("Download (Receive files)"),
+		withDialogOpts(
+			zenity.Title("Torrent Class"),
+			zenity.DefaultItems("Download (Receive files)"),
+		)...,
 	)
 	if err != nil {
 		if err == zenity.ErrCanceled {
@@ -38,16 +50,20 @@ func RunInteractiveSetup() (mode, path, ipOverride, seederIP string, err error) 
 	if selectedMode == "Seed (Share a file/folder)" {
 		mode = "seed"
 		err := zenity.Question("What would you like to share?",
-			zenity.Title("Torrent Class - Seeding"),
-			zenity.OKLabel("          Folder          "),
-			zenity.ExtraButton("          File          "),
-			zenity.CancelLabel("          Abort          "),
+			withDialogOpts(
+				zenity.Title("Torrent Class - Seeding"),
+				zenity.OKLabel("          Folder          "),
+				zenity.ExtraButton("          File          "),
+				zenity.CancelLabel("          Abort          "),
+			)...,
 		)
 
 		if err == nil { // "Folder" clicked
 			res, err := zenity.SelectFile(
-				zenity.Title("Select folder to seed"),
-				zenity.Directory(),
+				withDialogOpts(
+					zenity.Title("Select folder to seed"),
+					zenity.Directory(),
+				)...,
 			)
 			if err != nil {
 				if err == zenity.ErrCanceled {
@@ -58,7 +74,9 @@ func RunInteractiveSetup() (mode, path, ipOverride, seederIP string, err error) 
 			path = res
 		} else if err == zenity.ErrExtraButton { // "File" clicked
 			res, err := zenity.SelectFile(
-				zenity.Title("Select file to seed"),
+				withDialogOpts(
+					zenity.Title("Select file to seed"),
+				)...,
 			)
 			if err != nil {
 				if err == zenity.ErrCanceled {
@@ -74,12 +92,14 @@ func RunInteractiveSetup() (mode, path, ipOverride, seederIP string, err error) 
 	} else {
 		// Download config
 		err := zenity.Question("Where would you like to save the files?",
-			zenity.Title("Torrent Class - Download"),
-			zenity.OKLabel("          Choose Folder          "),
-			zenity.CancelLabel("          Current Directory          "),
+			withDialogOpts(
+				zenity.Title("Torrent Class - Download"),
+				zenity.OKLabel("          Choose Folder          "),
+				zenity.CancelLabel("          Current Directory          "),
+			)...,
 		)
 		if err == nil {
-			res, err := zenity.SelectFile(zenity.Title("Select destination folder"), zenity.Directory())
+			res, err := zenity.SelectFile(withDialogOpts(zenity.Title("Select destination folder"), zenity.Directory())...)
 			if err == nil {
 				path = res
 			}
@@ -91,15 +111,19 @@ func RunInteractiveSetup() (mode, path, ipOverride, seederIP string, err error) 
 		discoveryMode, err := zenity.List(
 			"Choose discovery mode:",
 			[]string{"Automatic (UDP Discovery)", "Manual (Enter Seeder IP)"},
-			zenity.Title("Torrent Class - Connectivity"),
-			zenity.DefaultItems("Automatic (UDP Discovery)"),
+			withDialogOpts(
+				zenity.Title("Torrent Class - Connectivity"),
+				zenity.DefaultItems("Automatic (UDP Discovery)"),
+			)...,
 		)
 		if err == nil && discoveryMode == "Manual (Enter Seeder IP)" {
 			for {
 				res, err := zenity.Entry("Enter the Instructor/Seeder IP address:",
-					zenity.Title("Manual Connection"),
-					zenity.EntryText("192.168.x.x"),
-					zenity.Width(400),
+					withDialogOpts(
+						zenity.Title("Manual Connection"),
+						zenity.EntryText("192.168.x.x"),
+						zenity.Width(400),
+					)...,
 				)
 				if err != nil { // Canceled
 					break
@@ -108,7 +132,8 @@ func RunInteractiveSetup() (mode, path, ipOverride, seederIP string, err error) 
 					seederIP = res
 					break
 				}
-				zenity.Error("Invalid IPv4 address. Please enter a valid address (e.g. 192.168.1.10) without port.", zenity.Title("Invalid Input"))
+				zenity.Error("Invalid IPv4 address. Please enter a valid address (e.g. 192.168.1.10) without port.",
+					withDialogOpts(zenity.Title("Invalid Input"))...)
 			}
 		}
 	}
@@ -125,8 +150,10 @@ func RunInteractiveSetup() (mode, path, ipOverride, seederIP string, err error) 
 			selected, err := zenity.List(
 				"Multiple network adapters found. Select one to use:",
 				options,
-				zenity.Title("Torrent Class - Network Adapter"),
-				zenity.DefaultItems(options[0]),
+				withDialogOpts(
+					zenity.Title("Torrent Class - Network Adapter"),
+					zenity.DefaultItems(options[0]),
+				)...,
 			)
 			if err == nil {
 				parts := strings.Fields(selected)

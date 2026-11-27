@@ -1,75 +1,33 @@
-# Technical Documentation: Torrent Class
+# Technical Overview
 
-Torrent Class is a specialized P2P file sharing tool designed for high-speed, local-network distribution without requiring internet connectivity or central infrastructure.
+Torrent Class wraps [`anacrolix/torrent`](https://github.com/anacrolix/torrent) with local peer discovery so a group of machines on the same LAN can distribute large files without internet access, trackers, or DHT.
 
-## Core Technologies
+## Architecture
 
-### 1. BitTorrent Protocol (`anacrolix/torrent`)
-The engine is built on the [anacrolix/torrent](https://github.com/anacrolix/torrent) library, a full-featured BitTorrent implementation in Go. 
-- **Hashing**: Files are split into pieces (default 256KB) and hashed (SHA-1). This ensures data integrity—if a single bit is flipped during transfer, the client detects it and redownloads that piece.
-- **Tit-for-Tat**: The library manages peer connections, piece selection strategies, and bandwidth throttling.
+### 1. Torrent Engine (`pkg/engine`)
+- **Local-only configuration**: DHT and UPnP/NAT-PMP port forwarding are disabled so traffic stays on the local network and avoids router errors.
+- **Dynamic piece sizing**: Piece length scales automatically with payload size—from `256 KiB` (under `512 MiB`) up to `16 MiB` (`16 GiB` and above)—keeping metadata compact even for multi-gigabyte VM images.
+- **Sequential hashing**: Files are opened one at a time during hashing so folders containing thousands of files never exhaust OS file descriptors.
+- **Metainfo cache**: Generated torrent metadata is cached next to the source path as `.<name>.torrent-class-cache`. On subsequent runs, the cache is reused if no file has a newer modification time and both the file count and total byte size still match.
 
-### 2. Local Discovery (`pkg/discovery`)
-Since we operate in "offline" mode without Trackers or DHT (Distributed Hash Tables), we use a **Hybrid Discovery** approach:
+### 2. Peer Discovery (`pkg/discovery` & `pkg/httpserver`)
+Because trackers and DHT are off, peers find each other through two local channels:
 
-#### Phase A: UDP Broadcast
-- **Broadcast Port**: 4243
-- **Bittorrent Port**: 8081 (Default)
-- **Mechanism**: The Seeder (and Downloaders in "Viral" mode) sends a UDP packet to the subnet's broadcast address (e.g., `192.168.1.255`).
-- **Payload**: `TORRENT_DIST:<magnet_link>|<ip>|<port>`
-- **Direct Connection**: When a client hears this broadcast, it skips the normal BitTorrent "search" phase and immediately adds the sender's IP:Port as a direct peer.
+- **UDP Broadcast (port `4243`)**: Every 2 seconds, active seeders and downloaders broadcast `TORRENT_DIST:<magnet>|<ip>|<port>` to the subnet broadcast address and `255.255.255.255` (skipping loopback and `169.254.x.x` link-local addresses). Listeners parse incoming packets and add `IP:Port` directly to the torrent client, refreshing seen peers after a 10-minute TTL.
+- **HTTP Fallback (port `8000`)**: When seeding, an HTTP server exposes `/info` (returning JSON with the magnet URI, seeder IP, and BitTorrent port) and serves `shareable_YYYY-MM-DD/` at `/`. If a downloader receives no UDP broadcast within 25 seconds—common on client-isolated or filtered Wi-Fi—it prompts for the seeder's IP and fetches `/info` over HTTP.
 
-#### Phase B: HTTP Fallback (Restricted Networks)
-- **HTTP Port**: 8000 (Default)
-- **Endpoint**: `/info`
-- **Mechanism**: If UDP broadcasts are blocked by firewalls, clients can reach out to the Instructor's IP via HTTP.
-- **Payload**: JSON containing the magnet link and BitTorrent port.
-- **Trigger**: In download mode, if a magnet link isn't found via UDP within 25 seconds, a GUI popup prompts for the Instructor's IP to jumpstart the connection via HTTP.
+### 3. Classroom Swarm Behavior
+To prevent the instructor's machine from becoming a bottleneck when dozens of students connect at once:
+1. Downloaders prioritize the first 5% of pieces (`PiecePriorityNow`) as soon as metadata arrives so they have complete pieces to upload quickly.
+2. Downloaders immediately start broadcasting the magnet over UDP so late-joining peers discover and pull from classmates as well as the instructor.
 
-### 3. Terminal UI (`pkg/tui`)
-Built using the **Charmbracelet** stack:
-- **Bubble Tea**: A Go framework based on The Elm Architecture (Model-Update-View).
-- **Lip Gloss**: Used for terminal styling, borders, and colors.
-- **Progress**: A specialized component for rendering the visual progress bar.
+### 4. Setup Dialogs & Terminal UI (`pkg/wizard` & `pkg/tui`)
+- Running without CLI flags opens native dialogs via `ncruces/zenity` (Win32 on Windows, `osascript` on macOS, `zenity` on Linux). On Linux desktops, if the binary was double-clicked without a terminal attached, it automatically relaunches itself inside an available terminal emulator.
+- Once configured, `bubbletea` renders transfer progress, peer count, and exponentially smoothed (EMA) upload/download speeds.
 
-### 4. Interactive GUI (`github.com/ncruces/zenity`)
-For users who run the tool without command-line flags, Torrent Class provides a native GUI experience:
-- **Platform Native**: Uses PowerShell/Scripting on Windows, AppleScript on macOS, and zenity/qdbus on Linux.
-- **Simplified Choice**: Logic-driven dialogs guide users through mode selection and file picking.
-- **Manual IP Entry**: Option to enter the Instructor's IP directly if automatic discovery is blocked.
-- **Adapter Selection**: If multiple adapters are detected, a `zenity.List` dialog allows explicit selection.
-- **Validation**: Manual IP entries are validated to be proper IPv4 addresses without ports.
+## Local State Files
 
-### 5. HTTP Isolation & Branding
-In seed mode, the HTTP server provides a clean interface for students:
-- **Shareable Folder**: On startup, the tool creates a `shareable_YYYY-MM-DD` directory.
-- **Binary Copy**: It copies the current executable into this folder.
-- **Clean Listing**: The HTTP server serves this isolated directory, ensuring students only see the necessary files.
+- `.torrent.bolt.db`: Created by `anacrolix/torrent` in the working directory to track piece completion across restarts.
+- `.<target>.torrent-class-cache`: Cached torrent metainfo next to a seeded file or folder.
 
-## Network Architecture: "Viral Seeding"
-
-In a traditional setup, the instructor (Seeder) would be the bottleneck. Torrent Class implements **Viral Seeding**:
-1. **Instructor** starts seeding and broadcasting.
-2. **Student A** receives broadcast, starts downloading.
-3. **Student A** immediately begins broadcasting the same magnet link.
-4. **Student B** can now find the file from either the Teacher OR Student A.
-5. **Data Transfer**: Students share pieces with each other as they download, creating a mesh network that scales with the number of participants.
-
-## Storage & Persistence
-
-Torrent Class uses a local database file named `.torrent.bolt.db` (BoltDB format) to store:
-- **Metadata Cache**: Stores torrent information so it doesn't need to be re-fetched on every start.
-- **Peer History**: Remembers known peer addresses to speed up reconnections.
-- **Download State**: Tracks which pieces are already on disk to allow resuming transfers instantly.
-
-> [!TIP]
-> If you encounter network errors like "Host is down" or cannot find peers after a network change, deleting this file will clear the peer cache and force a fresh discovery.
-
-## Dependencies
-
-- `github.com/anacrolix/torrent`: Core P2P engine.
-- `github.com/charmbracelet/bubbletea`: TUI framework.
-- `github.com/charmbracelet/bubbles`: TUI component library (Progress Bar).
-- `github.com/charmbracelet/lipgloss`: Terminal layout and styling.
-- `github.com/ncruces/zenity`: Native GUI dialogs.
-- `github.com/mattn/go-isatty`: Terminal capability detection.
+Delete either file if you want to force a clean re-hash or reset local transfer state.
