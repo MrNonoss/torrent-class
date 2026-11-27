@@ -6,6 +6,7 @@ import (
 	"context"
 	"os"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -19,6 +20,7 @@ var (
 	user32   = syscall.NewLazyDLL("user32.dll")
 
 	procGetConsoleWindow         = kernel32.NewProc("GetConsoleWindow")
+	procGetConsoleProcessList    = kernel32.NewProc("GetConsoleProcessList")
 	procGetCurrentThreadId       = kernel32.NewProc("GetCurrentThreadId")
 	procGetForegroundWindow      = user32.NewProc("GetForegroundWindow")
 	procSetForegroundWindow      = user32.NewProc("SetForegroundWindow")
@@ -41,10 +43,12 @@ var (
 
 const (
 	swpNoSize          = 0x0001
+	swpNoMove          = 0x0002
 	swpNoZOrder        = 0x0004
 	swpNoActivate      = 0x0010
 	swpShowWindow      = 0x0040
-	hwndTopMost        = ^uintptr(0) // (HWND)-1
+	hwndTopMost        = ^uintptr(0)  // (HWND)-1
+	hwndNoTopMost      = ^uintptr(1)  // (HWND)-2
 	gwlStyle           = ^uintptr(15) // -16
 	wsCaption          = 0x00C00000
 	monitorDefaultNear = 0x00000002
@@ -66,9 +70,59 @@ type monitorInfo struct {
 
 var savedTerminalHWND uintptr
 
+// Package-level EnumWindows callback and guarded scan state.
+// Go's runtime caps syscall.NewCallback at 2000 slots per process and never
+// frees them, so the callback must be allocated exactly once.
+var (
+	enumMu         sync.Mutex
+	enumTargetPID  uint32
+	enumSkipHWND   uintptr
+	enumCandidates []uintptr
+	enumWindowsCB  = syscall.NewCallback(enumWindowsProc)
+)
+
+func enumWindowsProc(hwnd uintptr, _ uintptr) uintptr {
+	if hwnd == enumSkipHWND {
+		return 1
+	}
+	if vis, _, _ := procIsWindowVisible.Call(hwnd); vis == 0 {
+		return 1
+	}
+	var pid uint32
+	procGetWindowThreadProcessId.Call(hwnd, uintptr(unsafe.Pointer(&pid)))
+	if pid != enumTargetPID {
+		return 1
+	}
+	if parent, _, _ := procGetParent.Call(hwnd); parent != 0 {
+		return 1
+	}
+	style, _, _ := procGetWindowLongW.Call(hwnd, gwlStyle)
+	if style&wsCaption == 0 {
+		return 1
+	}
+	cls := getWindowClass(hwnd)
+	if cls == "#32770" || strings.HasPrefix(cls, "WC_") {
+		enumCandidates = append(enumCandidates, hwnd)
+	}
+	return 1
+}
+
+// ownsConsole reports whether this process is the sole owner attached to the
+// console (i.e. double-clicked in Explorer rather than run inside an existing shell).
+func ownsConsole() bool {
+	var pids [4]uint32
+	count, _, _ := procGetConsoleProcessList.Call(uintptr(unsafe.Pointer(&pids[0])), uintptr(len(pids)))
+	return count <= 1
+}
+
 // PrepareTerminal locates the active console or Windows Terminal window and
-// centers it in the middle of the current monitor before GUI dialogs open.
+// centers it in the middle of the current monitor before GUI dialogs open,
+// provided the program was launched in its own console rather than an existing shell.
 func PrepareTerminal() {
+	if !ownsConsole() {
+		return
+	}
+
 	hwnd := findTerminalWindow(500 * time.Millisecond)
 	if hwnd == 0 {
 		return
@@ -85,14 +139,14 @@ func PrepareTerminal() {
 }
 
 // DialogOptions returns platform-specific Zenity options.
-// On Windows, StartDialogPromoter handles centering and HWND_TOPMOST directly.
+// On Windows, StartDialogPromoter handles centering and z-order directly.
 func DialogOptions() []zenity.Option {
 	return nil
 }
 
 // StartDialogPromoter watches for newly opened Zenity dialog windows belonging
-// to the current process, centers them on the terminal's monitor, and places
-// them in front of the terminal window (HWND_TOPMOST + foreground focus).
+// to the current process, centers them on the terminal's monitor, and brings
+// them in front of the terminal window.
 func StartDialogPromoter(ctx context.Context) {
 	myPID := uint32(os.Getpid())
 	consoleHWND, _, _ := procGetConsoleWindow.Call()
@@ -107,33 +161,13 @@ func StartDialogPromoter(ctx context.Context) {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				var candidates []uintptr
-				cb := syscall.NewCallback(func(hwnd uintptr, _ uintptr) uintptr {
-					if hwnd == consoleHWND {
-						return 1
-					}
-					if vis, _, _ := procIsWindowVisible.Call(hwnd); vis == 0 {
-						return 1
-					}
-					var pid uint32
-					procGetWindowThreadProcessId.Call(hwnd, uintptr(unsafe.Pointer(&pid)))
-					if pid != myPID {
-						return 1
-					}
-					if parent, _, _ := procGetParent.Call(hwnd); parent != 0 {
-						return 1
-					}
-					style, _, _ := procGetWindowLongW.Call(hwnd, gwlStyle)
-					if style&wsCaption == 0 {
-						return 1
-					}
-					cls := getWindowClass(hwnd)
-					if cls == "#32770" || strings.HasPrefix(cls, "WC_") {
-						candidates = append(candidates, hwnd)
-					}
-					return 1
-				})
-				procEnumWindows.Call(cb, 0)
+				enumMu.Lock()
+				enumTargetPID = myPID
+				enumSkipHWND = consoleHWND
+				enumCandidates = enumCandidates[:0]
+				procEnumWindows.Call(enumWindowsCB, 0)
+				candidates := append([]uintptr(nil), enumCandidates...)
+				enumMu.Unlock()
 
 				for _, hwnd := range candidates {
 					if seen[hwnd] {
@@ -188,10 +222,11 @@ func promoteAndCenterDialog(dlgHWND uintptr) {
 		refHWND = dlgHWND
 	}
 
-	// Place dialog centered on the monitor and into the HWND_TOPMOST z-order band
-	// so the terminal can never cover it.
+	// Temporarily enter HWND_TOPMOST to jump ahead of the terminal, activate,
+	// and immediately drop back to HWND_NOTOPMOST so other apps (e.g. Explorer)
+	// aren't covered if the user switches away.
 	centerWindowOnMonitor(dlgHWND, refHWND, swpNoSize|swpNoActivate|swpShowWindow)
-	procSetWindowPos.Call(dlgHWND, hwndTopMost, 0, 0, 0, 0, swpNoSize|0x0002|swpNoActivate|swpShowWindow) // 0x0002 = SWP_NOMOVE
+	procSetWindowPos.Call(dlgHWND, hwndTopMost, 0, 0, 0, 0, swpNoSize|swpNoMove|swpNoActivate|swpShowWindow)
 
 	fg, _, _ := procGetForegroundWindow.Call()
 	if fg != dlgHWND {
@@ -223,6 +258,8 @@ func promoteAndCenterDialog(dlgHWND uintptr) {
 			}
 		}
 	}
+
+	procSetWindowPos.Call(dlgHWND, hwndNoTopMost, 0, 0, 0, 0, swpNoSize|swpNoMove|swpNoActivate)
 }
 
 func centerWindowOnMonitor(targetHWND, monitorRefHWND uintptr, flags uintptr) {

@@ -15,7 +15,7 @@ import (
 )
 
 // PrepareTerminal centers the active X11 terminal window on screen when xdotool
-// and xrandr/xdpyinfo are available. On Wayland, compositors manage placement automatically.
+// is available. On Wayland, compositors manage placement automatically.
 func PrepareTerminal() {
 	if os.Getenv("DISPLAY") == "" {
 		return

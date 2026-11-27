@@ -3,6 +3,4 @@
 
 # Binaries
 releases/*
-
-# Project logs/meta
-CHANGELOG.md
+dist/*

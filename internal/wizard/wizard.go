@@ -6,11 +6,13 @@ import (
 	"log"
 	"net"
 	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/ncruces/zenity"
-	"torrent-class/pkg/netutils"
-	"torrent-class/pkg/winmgr"
+	"torrent-class/internal/netutils"
+	"torrent-class/internal/winmgr"
 )
 
 func IsValidIPv4(ip string) bool {
@@ -19,6 +21,29 @@ func IsValidIPv4(ip string) bool {
 		return false
 	}
 	return parsedIP.To4() != nil && !strings.Contains(ip, ":")
+}
+
+// ResolveInteractivePath avoids dumping downloads and .torrent.bolt.db into $HOME
+// when the user picks "Current Directory" after double-clicking the binary in
+// macOS Finder (which launches Terminal with cwd=$HOME) or a Linux launcher.
+func ResolveInteractivePath(path string) string {
+	if path != "." {
+		return path
+	}
+	exePath, err := os.Executable()
+	if err != nil {
+		return path
+	}
+	exeDir := filepath.Dir(exePath)
+
+	if runtime.GOOS == "darwin" || os.Getenv("TORRENT_CLASS_RELAUNCHED") == "1" {
+		cwd, err := os.Getwd()
+		home, herr := os.UserHomeDir()
+		if err == nil && herr == nil && cwd == home && exeDir != home {
+			return exeDir
+		}
+	}
+	return path
 }
 
 func withDialogOpts(opts ...zenity.Option) []zenity.Option {
@@ -58,7 +83,7 @@ func RunInteractiveSetup() (mode, path, ipOverride, seederIP string, err error) 
 			)...,
 		)
 
-		if err == nil { // "Folder" clicked
+		if err == nil {
 			res, err := zenity.SelectFile(
 				withDialogOpts(
 					zenity.Title("Select folder to seed"),
@@ -72,7 +97,7 @@ func RunInteractiveSetup() (mode, path, ipOverride, seederIP string, err error) 
 				log.Fatalf("Error selecting folder: %v", err)
 			}
 			path = res
-		} else if err == zenity.ErrExtraButton { // "File" clicked
+		} else if err == zenity.ErrExtraButton {
 			res, err := zenity.SelectFile(
 				withDialogOpts(
 					zenity.Title("Select file to seed"),
@@ -86,11 +111,10 @@ func RunInteractiveSetup() (mode, path, ipOverride, seederIP string, err error) 
 			}
 			path = res
 		} else {
-			// "Abort" clicked or window closed
 			os.Exit(0)
 		}
 	} else {
-		// Download config
+		path = "."
 		err := zenity.Question("Where would you like to save the files?",
 			withDialogOpts(
 				zenity.Title("Torrent Class - Download"),
@@ -100,14 +124,12 @@ func RunInteractiveSetup() (mode, path, ipOverride, seederIP string, err error) 
 		)
 		if err == nil {
 			res, err := zenity.SelectFile(withDialogOpts(zenity.Title("Select destination folder"), zenity.Directory())...)
-			if err == nil {
+			if err == nil && res != "" {
 				path = res
 			}
-		} else {
-			path = "."
 		}
+		path = ResolveInteractivePath(path)
 
-		// Discovery config
 		discoveryMode, err := zenity.List(
 			"Choose discovery mode:",
 			[]string{"Automatic (UDP Discovery)", "Manual (Enter Seeder IP)"},
@@ -125,7 +147,7 @@ func RunInteractiveSetup() (mode, path, ipOverride, seederIP string, err error) 
 						zenity.Width(400),
 					)...,
 				)
-				if err != nil { // Canceled
+				if err != nil {
 					break
 				}
 				if IsValidIPv4(res) {
@@ -138,7 +160,6 @@ func RunInteractiveSetup() (mode, path, ipOverride, seederIP string, err error) 
 		}
 	}
 
-	// Network Interface Selection
 	if ipOverride == "" {
 		ifaces, _ := netutils.GetValidInterfaces()
 		if len(ifaces) > 1 {

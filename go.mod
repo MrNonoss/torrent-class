@@ -3,6 +3,15 @@ module torrent-class
 go 1.25.6
 
 require (
+	github.com/anacrolix/torrent v1.61.0
+	github.com/charmbracelet/bubbles v0.21.1
+	github.com/charmbracelet/bubbletea v1.3.10
+	github.com/charmbracelet/lipgloss v1.1.0
+	github.com/mattn/go-isatty v0.0.20
+	github.com/ncruces/zenity v0.10.14
+)
+
+require (
 	github.com/RoaringBitmap/roaring v1.2.3 // indirect
 	github.com/akavel/rsrc v0.10.2 // indirect
 	github.com/alecthomas/atomic v0.1.0-alpha2 // indirect
@@ -20,7 +29,6 @@ require (
 	github.com/anacrolix/multiless v0.4.0 // indirect
 	github.com/anacrolix/stm v0.5.0 // indirect
 	github.com/anacrolix/sync v0.5.5-0.20251119100342-d78dd1f686f1 // indirect
-	github.com/anacrolix/torrent v1.61.0 // indirect
 	github.com/anacrolix/upnp v0.1.4 // indirect
 	github.com/anacrolix/utp v0.1.0 // indirect
 	github.com/aymanbagabas/go-osc52/v2 v2.0.1 // indirect
@@ -29,11 +37,8 @@ require (
 	github.com/bits-and-blooms/bitset v1.24.4 // indirect
 	github.com/bradfitz/iter v0.0.0-20191230175014-e8f45d346db8 // indirect
 	github.com/cespare/xxhash v1.1.0 // indirect
-	github.com/charmbracelet/bubbles v0.21.1 // indirect
-	github.com/charmbracelet/bubbletea v1.3.10 // indirect
 	github.com/charmbracelet/colorprofile v0.4.1 // indirect
 	github.com/charmbracelet/harmonica v0.2.0 // indirect
-	github.com/charmbracelet/lipgloss v1.1.0 // indirect
 	github.com/charmbracelet/x/ansi v0.11.5 // indirect
 	github.com/charmbracelet/x/cellbuf v0.0.15 // indirect
 	github.com/charmbracelet/x/term v0.2.2 // indirect
@@ -57,7 +62,6 @@ require (
 	github.com/josephspurrier/goversioninfo v1.4.1 // indirect
 	github.com/klauspost/cpuid/v2 v2.2.3 // indirect
 	github.com/lucasb-eyer/go-colorful v1.3.0 // indirect
-	github.com/mattn/go-isatty v0.0.20 // indirect
 	github.com/mattn/go-localereader v0.0.1 // indirect
 	github.com/mattn/go-runewidth v0.0.19 // indirect
 	github.com/minio/sha256-simd v1.0.0 // indirect
@@ -68,7 +72,6 @@ require (
 	github.com/muesli/termenv v0.16.0 // indirect
 	github.com/multiformats/go-multihash v0.2.3 // indirect
 	github.com/multiformats/go-varint v0.0.6 // indirect
-	github.com/ncruces/zenity v0.10.14 // indirect
 	github.com/pion/datachannel v1.5.9 // indirect
 	github.com/pion/dtls/v3 v3.0.3 // indirect
 	github.com/pion/ice/v4 v4.0.2 // indirect
